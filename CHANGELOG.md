@@ -1,3 +1,30 @@
+## v3.9.21 — 2026-09-09 — Bump normalize cache version (real fix for the zoom bug)
+
+Reported live: the zoom artifact kept happening on the SAME clips every
+time — not randomly. That's the tell: v3.9.17 fixed the actual encoding
+bug (dropped `-noautorotate` so rotated portrait clips normalize with the
+correct orientation, matching the canvas `get_video_info()` already sizes
+for) but never bumped `NORMALIZATION_VERSION`. `normalize_video_for_live()`
+skips re-encoding and reuses whatever's already sitting in
+`~/mario_data/normalized_cache/<hash>.mp4` when the cache key matches — and
+the key didn't change, so every affected clip kept serving its OLD,
+still-mis-rotated cache file straight through v3.9.20. Cache reuse working
+exactly as designed is what made the bug look "stuck" to specific files:
+those were precisely the ones with a stale pre-fix cache entry.
+
+### app.py
+- `NORMALIZATION_VERSION` bumped **3 → 4**. This changes every cache key,
+  so the very next Start re-encodes every clip once (using the already-
+  parallelized, full-CPU, `ultrafast` normalize path from v3.9.18-19 —
+  fast) instead of reusing any pre-v3.9.17 cache file. No manual cache
+  cleanup needed, though deleting `~/mario_data/normalized_cache` by hand
+  also works if you want to force it immediately rather than on next Start.
+- `MARIO_VERSION` bumped to **3.9.21**.
+
+### Tests
+- `python3 -m py_compile app.py auth.py state.py` ✓
+- `pytest -q` → 35 passed.
+
 ## v3.9.20 — 2026-09-09 — Wire up "Restart Now" after an update
 
 The backend already had a full, safe `/api/system/restart-app` endpoint

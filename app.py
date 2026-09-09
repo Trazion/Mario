@@ -1114,7 +1114,7 @@ def _snapshot_start_progress():
 # MP4 BEFORE the live FFmpeg sees it. This eliminates the mid-clip zoom-in
 # artifact caused by SAR/DAR/rotation/crop metadata or filter reinitialization
 # when a clip's intrinsic params change inside the same file.
-NORMALIZATION_VERSION = 3  # v3.9.16: per-clip start_offset_seconds baked in
+NORMALIZATION_VERSION = 4  # v3.9.21: bump forces stale pre-rotation-fix cache to regenerate
 
 
 def _probe_has_audio(src):
@@ -2702,7 +2702,7 @@ def delete_job():
 
 
 # ── (19) Version / auto-update checker ───────────────────────────────────────
-MARIO_VERSION = "3.9.20"
+MARIO_VERSION = "3.9.21"
 # v3.9.19: defaults to this project's own repo so update-check works out of
 # the box; MARIO_GITHUB_REPO still overrides it for forks/self-hosters.
 # Uses `or` rather than os.environ.get's default arg: setup.sh (from
