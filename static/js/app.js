@@ -1337,9 +1337,10 @@
       }
       if(d.updated){
         if(statusEl) statusEl.textContent =
-          `Updated ${d.before} → ${d.after}. Restart required: ${d.restart_hint}`;
+          `Updated ${d.before} → ${d.after}. Restart required to load the new code.`;
         log(`Updated ${d.before} → ${d.after} — restart Mario to apply`,'success');
         if(btn) btn.style.display = 'none';
+        await _revealUpdateRestartBtn();
       } else {
         if(statusEl) statusEl.textContent = 'Already up to date — nothing to pull.';
         log('Already up to date','info');
@@ -1350,6 +1351,24 @@
     }finally{
       if(btn) btn.disabled = false;
     }
+  }
+
+  // Shows the Updates card's "Restart Now" button after a successful pull,
+  // checking /api/app/info first so it's disabled with a real reason
+  // (rather than silently doing nothing) when passwordless sudo for
+  // `systemctl restart` hasn't been set up — see setup.sh.
+  async function _revealUpdateRestartBtn(){
+    const rbtn = document.getElementById('updateRestartBtn');
+    if(!rbtn) return;
+    rbtn.style.display = 'inline-flex';
+    try{
+      const info = await (await fetch('/api/app/info')).json();
+      const dep = info.deployment || {};
+      rbtn.disabled = !dep.restart_app_supported;
+      rbtn.title = dep.restart_app_supported
+        ? 'Restart Mario now to load the new code'
+        : (dep.restart_app_reason || 'Restart-from-UI is not set up on this server — see setup.sh, or restart manually.');
+    }catch(e){ /* leave enabled; restartApp() will surface any real error */ }
   }
 
   // ── (26) Stream snapshot ───────────────────────────────────────────────────

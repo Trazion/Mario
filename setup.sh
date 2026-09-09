@@ -334,6 +334,40 @@ else
     info "systemd not detected. Skipping service install."
 fi
 
+# ── Passwordless sudo for the dashboard's "Restart App" button ─────
+# The backend's /api/system/restart-app already exists and is opt-in-safe
+# (rate-limited, fixed command, no user input concatenated) but needs
+# `sudo systemctl restart <this one unit>` to work without a password
+# prompt — a web request obviously can't answer one. Scope the rule to
+# EXACTLY this unit, nothing broader.
+RESTART_SUDO_ENABLED=0
+if [ "$SYSTEMD_INSTALLED" = "1" ]; then
+    if ask_yes_no "Allow the Mario dashboard's 'Restart App' button to restart this one service (adds a narrowly-scoped passwordless sudo rule)?" "no"; then
+        SYSTEMCTL_BIN="$(command -v systemctl)"
+        if [ -z "$SYSTEMCTL_BIN" ]; then
+            warn "systemctl not found on PATH — skipping."
+        else
+            SUDOERS_FILE="/etc/sudoers.d/mario-restart-${REAL_USER}"
+            SUDOERS_LINE="${REAL_USER} ALL=(root) NOPASSWD: ${SYSTEMCTL_BIN} restart ${CURRENT_UNIT}, ${SYSTEMCTL_BIN} is-active ${CURRENT_UNIT}"
+            TMP_SUDOERS="$(mktemp)"
+            echo "$SUDOERS_LINE" > "$TMP_SUDOERS"
+            # visudo -c validates syntax BEFORE it ever touches /etc/sudoers.d —
+            # a malformed file installed straight could break sudo system-wide.
+            if $SUDO visudo -c -f "$TMP_SUDOERS" >/dev/null 2>&1; then
+                $SUDO install -o root -g root -m 0440 "$TMP_SUDOERS" "$SUDOERS_FILE"
+                RESTART_SUDO_ENABLED=1
+                ok "Passwordless restart enabled → $SUDOERS_FILE"
+            else
+                warn "Generated sudoers rule failed validation — skipped. Restart App button will stay disabled."
+            fi
+            rm -f "$TMP_SUDOERS"
+        fi
+    else
+        info "Skipped. Enable later with:"
+        info "  echo '${REAL_USER} ALL=(root) NOPASSWD: $(command -v systemctl 2>/dev/null || echo /usr/bin/systemctl) restart ${CURRENT_UNIT}' | sudo tee /etc/sudoers.d/mario-restart-${REAL_USER} && sudo chmod 0440 /etc/sudoers.d/mario-restart-${REAL_USER}"
+    fi
+fi
+
 # ── Final summary ──────────────────────────────────────────
 echo ""
 echo -e "${GREEN}╔══════════════════════════════════════════╗${NC}"
@@ -347,6 +381,7 @@ echo -e "  Service:           ${CYAN}${CURRENT_UNIT}${NC}"
 if [ "$SYSTEMD_INSTALLED" = "1" ]; then
     echo -e "  Autostart:         $([ "$SYSTEMD_ENABLED" = "1" ] && echo -e "${GREEN}enabled${NC}" || echo -e "${YELLOW}disabled${NC}")"
     echo -e "  Service state:     $([ "$SYSTEMD_STARTED" = "1" ] && echo -e "${GREEN}started${NC}" || echo -e "${YELLOW}not started${NC}")"
+    echo -e "  Restart App btn:   $([ "$RESTART_SUDO_ENABLED" = "1" ] && echo -e "${GREEN}enabled${NC}" || echo -e "${YELLOW}disabled${NC}")"
 fi
 echo -e "  URL:               ${CYAN}http://127.0.0.1:5000${NC}"
 echo ""

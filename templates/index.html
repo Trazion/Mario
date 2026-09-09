@@ -204,6 +204,7 @@ window.apiFetch = async function(url, options){
           <div class="quick-row">
             <button class="btn btn-ghost" onclick="checkVersion(true)">🔄 Check for Updates</button>
             <button class="btn btn-success" id="updateNowBtn" onclick="applyUpdate()" style="display:none">⬇ Update Now</button>
+            <button class="btn btn-yellow" id="updateRestartBtn" onclick="restartApp()" style="display:none">⟳ Restart Now</button>
           </div>
           <div id="updateStatusText" class="sp-status" style="margin-top:10px">Checking version…</div>
           <div id="updateDirtyList" style="display:none;margin-top:6px;font-size:12px;opacity:.8"></div>

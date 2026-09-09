@@ -1,3 +1,45 @@
+## v3.9.20 — 2026-09-09 — Wire up "Restart Now" after an update
+
+The backend already had a full, safe `/api/system/restart-app` endpoint
+(rate-limited, fixed command, sudo -n probe, Docker-aware) and a button
+for it buried in the System/Health page — but nothing tied it to the new
+Updates card, and setup.sh never actually configured the passwordless
+sudo rule the button needs, so it silently did nothing on a fresh install.
+
+### app.py
+- `system_restart_app()` now checks `dep['restart_app_supported']` (the
+  existing `sudo -n systemctl is-active` probe) BEFORE spawning the
+  restart thread and returns a clear 400 with the reason if it's not set
+  up. Previously it unconditionally `Popen`'d `sudo -n systemctl restart`
+  and swallowed the result — with no NOPASSWD rule configured, the button
+  reported "Restarting app…" and quietly did nothing.
+- `MARIO_VERSION` bumped to **3.9.20**.
+
+### setup.sh
+- New interactive step after the systemd install: offers to add a
+  NOPASSWD sudoers rule scoped to EXACTLY `systemctl restart
+  mario@<this user>.service` (+ the `is-active` probe), written to
+  `/etc/sudoers.d/mario-restart-<user>`. `visudo -c` validates the
+  generated file before it's ever installed — a malformed sudoers file
+  could break `sudo` system-wide, so a validation failure aborts and
+  leaves the button disabled rather than installing anything unchecked.
+  Declining prints the exact rule to add later. Final summary now shows
+  a "Restart App btn: enabled/disabled" line.
+
+### templates/index.html / static/js/app.js
+- Dashboard's "Updates" card gains a "⟳ Restart Now" button, hidden until
+  `applyUpdate()` reports a successful pull (`updated: true`). It reuses
+  the existing `restartApp()` confirm+POST flow. A new
+  `_revealUpdateRestartBtn()` checks `/api/app/info`'s
+  `deployment.restart_app_supported` first and disables the button with
+  the real reason (e.g. "Add a NOPASSWD sudoers rule…") instead of
+  showing a control that would just fail.
+
+### Tests
+- `python3 -m py_compile app.py auth.py state.py` ✓
+- `pytest -q` → 35 passed.
+- `bash -n setup.sh` ✓ · `node --check static/js/app.js` ✓
+
 ## v3.9.19 — 2026-09-09 — In-dashboard update checker + one-click pull
 
 The version-check/apply endpoints (`/api/version/check`, `/api/version/apply`)
