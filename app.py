@@ -2,6 +2,7 @@ from flask import (Flask, render_template, jsonify, request, Response,
                    stream_with_context, make_response, session, redirect, url_for)
 import subprocess, os, json, threading, glob, time, re, random, base64, sqlite3
 import hmac, hashlib, signal, atexit, secrets, logging, sys, tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import deque, defaultdict
 from pathlib import Path
 from urllib.parse import urlparse
@@ -1290,47 +1291,83 @@ def _fmt_hms(secs):
     h, rem = divmod(s, 3600); m, s = divmod(rem, 60)
     return f'{h:02d}:{m:02d}:{s:02d}' if h else f'{m:02d}:{s:02d}'
 
+NORMALIZE_MAX_WORKERS = max(1, min(4, (os.cpu_count() or 2)))
+
 def prepare_normalized_playlist(items, w, h, fps, fit_mode):
     """Normalize EVERY playlist source. Returns a dict keyed by
     `normalized_map_key(src, start_offset_seconds)` so the same source at
     two different offsets gets two distinct cache files.
-    Raises RuntimeError on the first failure — live MUST NOT start."""
+    Raises RuntimeError on the first failure — live MUST NOT start.
+
+    v3.9.17: sources are deduped, then normalized CONCURRENTLY (bounded by
+    NORMALIZE_MAX_WORKERS) instead of one-at-a-time. Each `normalize_video_for_live`
+    call is an independent ffmpeg subprocess, so on any multi-core machine
+    this cuts wall-clock "Preparing Stream" time roughly by the worker count
+    for playlists with several sources — the single biggest complaint about
+    Normalize-Before-Live's startup cost."""
     base_settings = {'w': int(w), 'h': int(h), 'fps': int(fps),
                      'fit_mode': fit_mode or 'fit'}
-    mapping = {}
-    total = len(items)
-    _set_start_progress(phase='normalizing', total=total,
-                        message=f'Normalizing 0/{total}', percent=10)
-    completed = 0
-    for i, v in enumerate(items, 1):
+
+    # Dedup by (src, offset) up front — same composite key across rows only
+    # needs to be encoded once.
+    jobs = {}  # mkey -> (src, sofs, base, from_str)
+    order = []
+    for v in items:
         src = v['path']
         try:
             sofs = max(0.0, float(v.get('start_offset_seconds', 0) or 0))
         except (TypeError, ValueError):
             sofs = 0.0
-        base = os.path.basename(src)
         mkey = normalized_map_key(src, sofs)
-        from_str = f' from {_fmt_hms(sofs)}' if sofs > 0 else ''
-        _set_start_progress(
-            phase='normalizing', current_index=i, total=total,
-            current_clip=base,
-            message=f'Normalizing {i}/{total} — {base}{from_str}',
-            percent=int(10 + (completed / max(1, total)) * 75),
-        )
-        if mkey in mapping:
-            completed += 1; continue
-        _append_log(f'[NORMALIZE] {i}/{total} {base}{from_str}')
+        if mkey not in jobs:
+            base = os.path.basename(src)
+            from_str = f' from {_fmt_hms(sofs)}' if sofs > 0 else ''
+            jobs[mkey] = (src, sofs, base, from_str)
+            order.append(mkey)
+
+    mapping = {}
+    total = len(items)
+    total_jobs = len(order)
+    _set_start_progress(phase='normalizing', total=total,
+                        message=f'Normalizing 0/{total}', percent=10)
+
+    completed = 0
+    progress_lock = threading.Lock()
+
+    def _run(mkey):
+        src, sofs, base, from_str = jobs[mkey]
+        _append_log(f'[NORMALIZE] {base}{from_str}')
         per_settings = dict(base_settings, start_offset_seconds=sofs)
         cache_path, reused = normalize_video_for_live(src, per_settings)
-        mapping[mkey] = cache_path
-        completed += 1
-        _set_start_progress(
-            phase='normalizing', current_index=i, total=total,
-            current_clip=base,
-            message=('Using cached normalized clip ' if reused else
-                     'Normalized clip ') + f'{i}/{total}{from_str}',
-            percent=int(10 + (completed / max(1, total)) * 75),
-        )
+        return mkey, cache_path, reused, base, from_str
+
+    with ThreadPoolExecutor(max_workers=min(NORMALIZE_MAX_WORKERS, total_jobs or 1)) as pool:
+        futures = [pool.submit(_run, mkey) for mkey in order]
+        try:
+            for fut in as_completed(futures):
+                mkey, cache_path, reused, base, from_str = fut.result()
+                mapping[mkey] = cache_path
+                with progress_lock:
+                    completed += 1
+                    _set_start_progress(
+                        phase='normalizing', current_index=completed, total=total_jobs,
+                        current_clip=base,
+                        message=('Using cached normalized clip ' if reused else
+                                 'Normalized clip ') + f'{completed}/{total_jobs}{from_str}',
+                        percent=int(10 + (completed / max(1, total_jobs)) * 75),
+                    )
+        except Exception:
+            # First failure: cancel whatever hasn't started yet, drain the
+            # rest so their subprocesses don't leak, then re-raise. Live
+            # MUST NOT start on a normalization failure (unchanged contract).
+            for f in futures:
+                f.cancel()
+            for f in futures:
+                if f.done():
+                    try: f.result()
+                    except Exception: pass
+            raise
+
     _set_start_progress(phase='normalized', percent=85,
                         message=f'Normalized {total}/{total}')
     return mapping

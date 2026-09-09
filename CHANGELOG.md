@@ -44,9 +44,23 @@ this codebase. Also confirm the running profile actually has
 may have persisted `false` and silently kept using the older, unnormalized
 live path.
 
+- **`prepare_normalized_playlist()`**: sources are now deduped once, then
+  normalized CONCURRENTLY on a bounded thread pool
+  (`NORMALIZE_MAX_WORKERS = min(4, cpu_count)`) instead of one ffmpeg
+  process at a time. Each clip's normalization is an independent
+  subprocess, so on any multi-core machine this cuts "Preparing Stream"
+  wall-clock time roughly by the worker count for playlists with several
+  sources — the recurring complaint that Normalize-Before-Live takes a
+  long time before every Start. First-failure-aborts-start semantics are
+  unchanged: on the first error, remaining jobs are cancelled/drained and
+  the same `RuntimeError` is raised.
+
 ### Tests
 - `python3 -m py_compile app.py auth.py state.py` ✓
 - `pytest -q` → 35 passed.
+- Manual concurrency check (mocked ffmpeg): 6 clips at ~0.2s each finished
+  in ~0.4s (2 rounds of 4 workers) instead of ~1.2s serially; failure
+  still propagates as `RuntimeError`.
 
 ## v3.9.16 — 2026-06-10 — Per-clip start-offset (WMP-style trim)
 
