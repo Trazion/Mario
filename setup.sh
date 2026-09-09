@@ -274,7 +274,7 @@ preserve_default MARIO_MAX_UPLOAD_MB     "16"
 preserve_default MARIO_BACKUP_MAX_MB     "50"
 preserve_default MARIO_BACKUP_MAX_FILES  "500"
 preserve_default MARIO_LOG_LEVEL         "INFO"
-preserve_default MARIO_GITHUB_REPO       '""'
+preserve_default MARIO_GITHUB_REPO       "Trazion/Mario"
 preserve_default MARIO_ALLOW_AUTO_UPDATE "0"
 preserve_default MARIO_TELEGRAM_TOKEN    '""'
 preserve_default MARIO_TELEGRAM_CHAT_ID  '""'

@@ -2705,7 +2705,11 @@ def delete_job():
 MARIO_VERSION = "3.9.19"
 # v3.9.19: defaults to this project's own repo so update-check works out of
 # the box; MARIO_GITHUB_REPO still overrides it for forks/self-hosters.
-GITHUB_REPO   = os.environ.get('MARIO_GITHUB_REPO', 'Trazion/Mario')
+# Uses `or` rather than os.environ.get's default arg: setup.sh (from
+# before this default existed) writes MARIO_GITHUB_REPO="" into
+# ~/.mario_env, and an explicitly-empty env var would otherwise win over
+# get()'s default and disable the update checker again.
+GITHUB_REPO   = os.environ.get('MARIO_GITHUB_REPO') or 'Trazion/Mario'
 _ver_cache    = {'t': 0, 'data': None}
 
 @app.route('/api/version')
