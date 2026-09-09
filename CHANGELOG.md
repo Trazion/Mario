@@ -1,3 +1,50 @@
+## v3.9.18 — 2026-09-09 — Real per-clip progress bar + full-CPU normalize
+
+Two follow-up requests on top of v3.9.17's parallel normalize: a progress
+bar that shows real "where are we" instead of jumping once per whole clip,
+and using the entire machine's CPU so normalize finishes as fast as possible.
+
+### app.py
+- **Real progress**: `normalize_video_for_live()` now runs ffmpeg with
+  `-progress pipe:1 -nostats` and streams its `out_time_ms=`/`out_time=`
+  lines live (via `subprocess.Popen`, stderr drained on a side thread so it
+  can't deadlock the pipe). A new `progress_cb(fraction)` callback fires
+  continuously with real 0.0–1.0 encode progress for that one clip
+  (computed against the clip's ffprobed duration minus its start offset,
+  via new `_probe_duration()`). A 3600s watchdog `Timer` replaces the old
+  `subprocess.run(..., timeout=...)` since Popen has no built-in timeout.
+- **`prepare_normalized_playlist()`** combines every in-flight job's live
+  fraction plus each finished job's `1.0` into one smooth overall percent
+  (`10 + 75 * sum(fractions)/total_jobs`), and the progress message now
+  lists the clip(s) actively encoding right now, e.g.
+  `Normalizing 2/6 — a.mp4, b.mp4, c.mp4 +1`. The existing
+  `#startProgressPanel` / `/api/stream/start-progress` poller needs no
+  frontend change — it already renders whatever `percent`/`message` the
+  backend reports, which is now continuous instead of stepping only on
+  whole-clip completion.
+- **Full-CPU normalize**: `NORMALIZE_MAX_WORKERS` is no longer capped at 4
+  — it's `os.cpu_count()`, so a big playlist uses every core available.
+  Each per-job ffmpeg is capped with `-threads <cpu_count // workers>` so
+  the pool as a whole still uses ~100% of the CPU without every one of the
+  N concurrent jobs fighting each other for all cores at once
+  (oversubscription made the old default worse, not faster, on >4-core
+  boxes once workers were raised — this keeps the speedup real).
+- **`-preset ultrafast`** (was `veryfast`) for the normalize encode itself
+  — a further speed win. This is an intermediate cache file the live
+  ffmpeg re-encodes again on its way to v4l2/RTMP, so a slightly larger
+  intermediate in exchange for much faster normalization is the right
+  trade here; the crf=18 target quality is unchanged.
+- `MARIO_VERSION` bumped to **3.9.18**.
+
+### Tests
+- `python3 -m py_compile app.py auth.py state.py` ✓
+- `pytest -q` → 35 passed.
+- Manual mocked-ffmpeg check: 8 clips normalized concurrently show a
+  smoothly increasing percent (10 → 19 → 28 → … → 85) driven by fake
+  `out_time_ms` progress instead of jumping straight to each clip's 100%;
+  failure path (non-zero return code) still raises `RuntimeError` with the
+  captured stderr tail.
+
 ## v3.9.17 — 2026-09-09 — Rotation-consistent normalize + fixed GOP for RTMP
 
 Root-caused two remaining sources of the "periodic zoom-in / zoom-in-more /
