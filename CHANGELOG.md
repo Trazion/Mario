@@ -1,3 +1,102 @@
+## v3.9.19 — 2026-09-09 — In-dashboard update checker + one-click pull
+
+The version-check/apply endpoints (`/api/version/check`, `/api/version/apply`)
+already existed server-side but had no real UI beyond a small topbar badge
+that just linked out to GitHub. Added an actual "Updates" card on the
+Dashboard with a working "Check for Updates" button and a "Update Now"
+button that pulls straight from git.
+
+### app.py
+- `GITHUB_REPO` now defaults to `Trazion/Mario` (still overridable via
+  `MARIO_GITHUB_REPO`) so the update checker works out of the box on this
+  project without extra env setup.
+- `/api/version/check` no longer requires a published GitHub Release: it
+  tries `releases/latest` first, and on a 404 falls back to reading
+  `MARIO_VERSION` straight off `app.py` on the default branch via
+  `raw.githubusercontent.com` (new `_version_from_main_branch()`). This
+  repo bumps `MARIO_VERSION` per commit rather than cutting formal
+  releases, so the old releases-only check would never have found an
+  update here.
+- `/api/version/apply` (git fast-forward pull) is unchanged — still
+  opt-in via `MARIO_ALLOW_AUTO_UPDATE=1`, still refuses a dirty tree, still
+  requires the remote to match `GITHUB_REPO`. That safe-default stays as
+  it was; the new UI surfaces the 403 with the exact env var to set
+  instead of failing silently.
+- `MARIO_VERSION` bumped to **3.9.19**.
+
+### templates/index.html
+- New "⬆ Updates" card on the Dashboard page (right under Quick Actions):
+  a "🔄 Check for Updates" button, a "⬇ Update Now" button (hidden until
+  an update is actually available), and a status line that always shows
+  something concrete — current version, "already up to date", the
+  available new version, or an error — instead of the old silent-unless-
+  available topbar-only badge.
+
+### static/js/app.js
+- `checkVersion(manual)`: now writes a real status line to the dashboard
+  every time (on page load and on manual clicks), not just when an update
+  happens to be available. Reveals `#updateNowBtn` when one is.
+- New `applyUpdate()`: confirms, POSTs `/api/version/apply`, and reports
+  the exact outcome on the dashboard — the git before/after short SHAs and
+  restart hint on success, the specific dirty files on a 409, or the
+  precise `MARIO_ALLOW_AUTO_UPDATE=1` instruction on a 403 — instead of
+  the button doing nothing when auto-update is disabled server-side.
+
+### Tests
+- `python3 -m py_compile app.py auth.py state.py` ✓
+- `pytest -q` → 35 passed.
+- Manual check: mocked `releases/latest` → 404 → fallback path correctly
+  reads a version from the mocked raw `app.py` fetch and reports
+  `update_available: true`.
+- `node --check static/js/app.js` ✓ (no syntax errors)
+
+## v3.9.18 — 2026-09-09 — Real per-clip progress bar + full-CPU normalize
+
+Two follow-up requests on top of v3.9.17's parallel normalize: a progress
+bar that shows real "where are we" instead of jumping once per whole clip,
+and using the entire machine's CPU so normalize finishes as fast as possible.
+
+### app.py
+- **Real progress**: `normalize_video_for_live()` now runs ffmpeg with
+  `-progress pipe:1 -nostats` and streams its `out_time_ms=`/`out_time=`
+  lines live (via `subprocess.Popen`, stderr drained on a side thread so it
+  can't deadlock the pipe). A new `progress_cb(fraction)` callback fires
+  continuously with real 0.0–1.0 encode progress for that one clip
+  (computed against the clip's ffprobed duration minus its start offset,
+  via new `_probe_duration()`). A 3600s watchdog `Timer` replaces the old
+  `subprocess.run(..., timeout=...)` since Popen has no built-in timeout.
+- **`prepare_normalized_playlist()`** combines every in-flight job's live
+  fraction plus each finished job's `1.0` into one smooth overall percent
+  (`10 + 75 * sum(fractions)/total_jobs`), and the progress message now
+  lists the clip(s) actively encoding right now, e.g.
+  `Normalizing 2/6 — a.mp4, b.mp4, c.mp4 +1`. The existing
+  `#startProgressPanel` / `/api/stream/start-progress` poller needs no
+  frontend change — it already renders whatever `percent`/`message` the
+  backend reports, which is now continuous instead of stepping only on
+  whole-clip completion.
+- **Full-CPU normalize**: `NORMALIZE_MAX_WORKERS` is no longer capped at 4
+  — it's `os.cpu_count()`, so a big playlist uses every core available.
+  Each per-job ffmpeg is capped with `-threads <cpu_count // workers>` so
+  the pool as a whole still uses ~100% of the CPU without every one of the
+  N concurrent jobs fighting each other for all cores at once
+  (oversubscription made the old default worse, not faster, on >4-core
+  boxes once workers were raised — this keeps the speedup real).
+- **`-preset ultrafast`** (was `veryfast`) for the normalize encode itself
+  — a further speed win. This is an intermediate cache file the live
+  ffmpeg re-encodes again on its way to v4l2/RTMP, so a slightly larger
+  intermediate in exchange for much faster normalization is the right
+  trade here; the crf=18 target quality is unchanged.
+- `MARIO_VERSION` bumped to **3.9.18**.
+
+### Tests
+- `python3 -m py_compile app.py auth.py state.py` ✓
+- `pytest -q` → 35 passed.
+- Manual mocked-ffmpeg check: 8 clips normalized concurrently show a
+  smoothly increasing percent (10 → 19 → 28 → … → 85) driven by fake
+  `out_time_ms` progress instead of jumping straight to each clip's 100%;
+  failure path (non-zero return code) still raises `RuntimeError` with the
+  captured stderr tail.
+
 ## v3.9.17 — 2026-09-09 — Rotation-consistent normalize + fixed GOP for RTMP
 
 Root-caused two remaining sources of the "periodic zoom-in / zoom-in-more /

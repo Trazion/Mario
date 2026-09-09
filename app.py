@@ -1169,12 +1169,31 @@ def normalized_map_key(src, start_offset_seconds=0):
         sofs = 0.0
     return f'{src}|{sofs}'
 
-def normalize_video_for_live(src, settings):
+def _probe_duration(src):
+    """Return the source's duration in seconds (float), or 0.0 on any
+    failure. Used only to turn ffmpeg's live -progress output time into a
+    percentage — a 0.0 result just means no sub-clip progress is shown."""
+    try:
+        r = subprocess.run(
+            ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+             '-of', 'csv=p=0', src],
+            capture_output=True, text=True, timeout=10)
+        return max(0.0, float((r.stdout or '0').strip() or 0))
+    except Exception:
+        return 0.0
+
+def normalize_video_for_live(src, settings, threads=0, progress_cb=None):
     """Normalize ONE source. Returns (cache_path, reused_bool).
     Raises RuntimeError on failure (caller surfaces to UI).
 
     v3.9.16: when settings['start_offset_seconds'] > 0 the encoded cache
-    starts at that offset (input-level `-ss` before `-i`)."""
+    starts at that offset (input-level `-ss` before `-i`).
+    v3.9.18: `threads` caps this ONE ffmpeg's libx264 thread pool (so N
+    concurrent normalize jobs share the machine's cores instead of each
+    grabbing all of them); `progress_cb(fraction)` — if given — is called
+    repeatedly with real encode progress (0.0-1.0) parsed from ffmpeg's
+    own `-progress` stream, for a live "where are we" bar instead of a
+    single jump from 0% to 100% per clip."""
     cache_dir  = get_normalized_cache_dir()
     key        = build_normalized_cache_key(src, settings)
     cache_path = os.path.join(cache_dir, f'{key}.mp4')
@@ -1190,7 +1209,13 @@ def normalize_video_for_live(src, settings):
     _append_log(f'[NORMALIZE] cache={cache_path}')
     if os.path.isfile(cache_path) and os.path.getsize(cache_path) > 0:
         _append_log('[NORMALIZE] reused=true')
+        if progress_cb:
+            try: progress_cb(1.0)
+            except Exception: pass
         return cache_path, True
+
+    total_dur = _probe_duration(src)
+    remaining_dur = max(0.0, total_dur - sofs) if total_dur > 0 else 0.0
 
     w   = int(settings['w']);  h = int(settings['h'])
     fps = int(settings['fps'])
@@ -1216,9 +1241,14 @@ def normalize_video_for_live(src, settings):
     _append_log(f'[NORMALIZE] source_has_audio={"true" if has_audio else "false"}')
     _append_log(f'[NORMALIZE] audio_mode={"source" if has_audio else "silent"}')
 
+    # v3.9.18: 'ultrafast' (was 'veryfast') — this cache is an intermediate
+    # pass the LIVE ffmpeg re-encodes again on its way out, so we trade a
+    # slightly larger intermediate file for a big normalize-speed win.
+    # '-threads' caps this encode's own thread pool so concurrent jobs
+    # (see prepare_normalized_playlist) don't oversubscribe the CPU.
     common_v = [
-        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18',
-        '-pix_fmt', 'yuv420p',
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '18',
+        '-pix_fmt', 'yuv420p', '-threads', str(max(0, int(threads))),
     ]
     common_a = ['-c:a', 'aac', '-ar', '48000', '-ac', '2']
 
@@ -1239,9 +1269,15 @@ def normalize_video_for_live(src, settings):
     # '-noautorotate' lets ffmpeg apply the Display Matrix rotation on
     # decode (the default), so every normalized cache is rotated the
     # same way get_video_info() assumed when the canvas was sized.
+    # v3.9.18: '-progress pipe:1 -nostats' makes ffmpeg emit machine-readable
+    # `key=value` progress lines on stdout (out_time=, progress=continue/end)
+    # instead of just periodic banner stats — that's what lets us report
+    # real intra-clip percentage below.
+    progress_flags = ['-progress', 'pipe:1', '-nostats']
     if has_audio:
         cmd = [
             'ffmpeg', '-y', '-nostdin', '-hide_banner', '-loglevel', 'warning',
+            *progress_flags,
             *seek_in,
             '-i', src,
             '-vf', vf,
@@ -1253,6 +1289,7 @@ def normalize_video_for_live(src, settings):
     else:
         cmd = [
             'ffmpeg', '-y', '-nostdin', '-hide_banner', '-loglevel', 'warning',
+            *progress_flags,
             *seek_in,
             '-i', src,
             '-f', 'lavfi', '-i',
@@ -1266,19 +1303,65 @@ def normalize_video_for_live(src, settings):
             tmp,
         ]
     _append_log('[NORMALIZE] encoding…')
+
+    def _parse_out_time(line):
+        # Lines look like "out_time_ms=12345678" (microseconds, despite the
+        # name) or "out_time=00:00:12.345678". Either is fine.
+        if line.startswith('out_time_ms='):
+            try: return int(line.split('=', 1)[1]) / 1_000_000.0
+            except (ValueError, IndexError): return None
+        if line.startswith('out_time='):
+            val = line.split('=', 1)[1].strip()
+            m = re.match(r'(-?\d+):(\d+):(\d+(?:\.\d+)?)', val)
+            if m:
+                h, mnt, s = m.groups()
+                return int(h) * 3600 + int(mnt) * 60 + float(s)
+        return None
+
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, bufsize=1)
+    stderr_lines = []
+    def _drain_stderr():
+        try:
+            for line in proc.stderr:
+                stderr_lines.append(line)
+        except Exception:
+            pass
+    stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
+    stderr_thread.start()
+
+    timed_out = {'v': False}
+    def _kill_on_timeout():
+        timed_out['v'] = True
+        try: proc.kill()
+        except Exception: pass
+    watchdog = threading.Timer(3600, _kill_on_timeout)
+    watchdog.start()
     try:
-        proc = subprocess.run(cmd, stdout=subprocess.DEVNULL,
-                              stderr=subprocess.PIPE, text=True, timeout=3600)
-    except subprocess.TimeoutExpired:
+        for line in proc.stdout:
+            line = line.strip()
+            t = _parse_out_time(line)
+            if t is not None and remaining_dur > 0 and progress_cb:
+                try: progress_cb(max(0.0, min(1.0, t / remaining_dur)))
+                except Exception: pass
+        proc.wait()
+    finally:
+        watchdog.cancel()
+        stderr_thread.join(timeout=5)
+
+    if timed_out['v']:
         try: os.unlink(tmp)
         except OSError: pass
         raise RuntimeError(f'normalization timed out: {os.path.basename(src)}')
     if proc.returncode != 0 or not (os.path.isfile(tmp) and os.path.getsize(tmp) > 0):
-        tail = (proc.stderr or '').strip().splitlines()[-3:]
+        tail = ''.join(stderr_lines).strip().splitlines()[-3:]
         try: os.unlink(tmp)
         except OSError: pass
         raise RuntimeError(
             f'normalization failed for {os.path.basename(src)}: ' + ' | '.join(tail))
+    if progress_cb:
+        try: progress_cb(1.0)
+        except Exception: pass
     os.replace(tmp, cache_path)
     _append_log(f'[NORMALIZE] reused=false bytes={os.path.getsize(cache_path)} '
                 f'output={cache_path}')
@@ -1291,7 +1374,10 @@ def _fmt_hms(secs):
     h, rem = divmod(s, 3600); m, s = divmod(rem, 60)
     return f'{h:02d}:{m:02d}:{s:02d}' if h else f'{m:02d}:{s:02d}'
 
-NORMALIZE_MAX_WORKERS = max(1, min(4, (os.cpu_count() or 2)))
+# v3.9.18: use every core the machine has for the normalize pass — not
+# capped at 4 — since each per-job ffmpeg is itself thread-capped (see
+# below) to share the machine instead of oversubscribing it.
+NORMALIZE_MAX_WORKERS = max(1, (os.cpu_count() or 2))
 
 def prepare_normalized_playlist(items, w, h, fps, fit_mode):
     """Normalize EVERY playlist source. Returns a dict keyed by
@@ -1300,11 +1386,13 @@ def prepare_normalized_playlist(items, w, h, fps, fit_mode):
     Raises RuntimeError on the first failure — live MUST NOT start.
 
     v3.9.17: sources are deduped, then normalized CONCURRENTLY (bounded by
-    NORMALIZE_MAX_WORKERS) instead of one-at-a-time. Each `normalize_video_for_live`
-    call is an independent ffmpeg subprocess, so on any multi-core machine
-    this cuts wall-clock "Preparing Stream" time roughly by the worker count
-    for playlists with several sources — the single biggest complaint about
-    Normalize-Before-Live's startup cost."""
+    NORMALIZE_MAX_WORKERS) instead of one-at-a-time.
+    v3.9.18: worker count now uses ALL cores; each job's own ffmpeg is
+    capped to `cpu_count // workers` threads so the pool as a whole still
+    uses ~100% of the CPU without N jobs each fighting for every core.
+    Progress is now tracked per-job in real time (ffmpeg's own -progress
+    output, see normalize_video_for_live) and combined into one smooth
+    overall percentage instead of jumping only when a whole clip finishes."""
     base_settings = {'w': int(w), 'h': int(h), 'fps': int(fps),
                      'fit_mode': fit_mode or 'fit'}
 
@@ -1331,30 +1419,63 @@ def prepare_normalized_playlist(items, w, h, fps, fit_mode):
     _set_start_progress(phase='normalizing', total=total,
                         message=f'Normalizing 0/{total}', percent=10)
 
-    completed = 0
+    workers = min(NORMALIZE_MAX_WORKERS, total_jobs or 1)
+    threads_per_job = max(1, (os.cpu_count() or 2) // max(1, workers))
+
     progress_lock = threading.Lock()
+    job_fraction = {mkey: 0.0 for mkey in order}   # per-job 0.0-1.0, live
+    completed = 0
+    running_clips = set()
+
+    def _overall_percent():
+        # 10-85% band is the normalize phase; completed jobs count as 1.0,
+        # in-flight jobs contribute their live fraction.
+        frac_sum = sum(job_fraction.values())
+        return int(10 + (frac_sum / max(1, total_jobs)) * 75)
+
+    def _update_running_message():
+        names = ', '.join(sorted(running_clips)[:3]) or '…'
+        more = f' +{len(running_clips)-3}' if len(running_clips) > 3 else ''
+        _set_start_progress(
+            phase='normalizing', current_index=completed, total=total_jobs,
+            current_clip=names,
+            message=f'Normalizing {completed}/{total_jobs} — {names}{more}',
+            percent=_overall_percent(),
+        )
 
     def _run(mkey):
         src, sofs, base, from_str = jobs[mkey]
         _append_log(f'[NORMALIZE] {base}{from_str}')
+        with progress_lock:
+            running_clips.add(base)
+            _update_running_message()
         per_settings = dict(base_settings, start_offset_seconds=sofs)
-        cache_path, reused = normalize_video_for_live(src, per_settings)
+
+        def _cb(frac):
+            with progress_lock:
+                job_fraction[mkey] = frac
+                _update_running_message()
+
+        cache_path, reused = normalize_video_for_live(
+            src, per_settings, threads=threads_per_job, progress_cb=_cb)
         return mkey, cache_path, reused, base, from_str
 
-    with ThreadPoolExecutor(max_workers=min(NORMALIZE_MAX_WORKERS, total_jobs or 1)) as pool:
+    with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [pool.submit(_run, mkey) for mkey in order]
         try:
             for fut in as_completed(futures):
                 mkey, cache_path, reused, base, from_str = fut.result()
                 mapping[mkey] = cache_path
                 with progress_lock:
+                    job_fraction[mkey] = 1.0
+                    running_clips.discard(base)
                     completed += 1
                     _set_start_progress(
                         phase='normalizing', current_index=completed, total=total_jobs,
                         current_clip=base,
                         message=('Using cached normalized clip ' if reused else
                                  'Normalized clip ') + f'{completed}/{total_jobs}{from_str}',
-                        percent=int(10 + (completed / max(1, total_jobs)) * 75),
+                        percent=_overall_percent(),
                     )
         except Exception:
             # First failure: cancel whatever hasn't started yet, drain the
@@ -2581,32 +2702,58 @@ def delete_job():
 
 
 # ── (19) Version / auto-update checker ───────────────────────────────────────
-MARIO_VERSION = "3.9.17"
-GITHUB_REPO   = os.environ.get('MARIO_GITHUB_REPO', '')   # e.g. "user/mario-stream"
+MARIO_VERSION = "3.9.19"
+# v3.9.19: defaults to this project's own repo so update-check works out of
+# the box; MARIO_GITHUB_REPO still overrides it for forks/self-hosters.
+GITHUB_REPO   = os.environ.get('MARIO_GITHUB_REPO', 'Trazion/Mario')
 _ver_cache    = {'t': 0, 'data': None}
 
 @app.route('/api/version')
 def version_info():
     return jsonify({'version': MARIO_VERSION, 'repo': GITHUB_REPO})
 
+def _version_from_main_branch():
+    """Fallback for repos with no GitHub Releases published: read
+    MARIO_VERSION straight off app.py on the default branch tip."""
+    import urllib.request
+    url = f'https://raw.githubusercontent.com/{GITHUB_REPO}/HEAD/app.py'
+    req = urllib.request.Request(url, headers={'User-Agent': 'mario-stream'})
+    with urllib.request.urlopen(req, timeout=5) as r:
+        text = r.read().decode('utf-8', 'replace')
+    m = re.search(r'^MARIO_VERSION\s*=\s*["\']([^"\']+)["\']', text, re.M)
+    if not m:
+        raise RuntimeError('MARIO_VERSION not found on default branch')
+    return m.group(1), f'https://github.com/{GITHUB_REPO}'
+
 @app.route('/api/version/check')
 def version_check():
-    """Compares MARIO_VERSION to the latest GitHub release tag (cached 1h)."""
-    import urllib.request
+    """Compares MARIO_VERSION to the latest GitHub release tag (cached 1h).
+    v3.9.19: falls back to reading MARIO_VERSION off the default branch's
+    app.py when the repo has no GitHub Releases published (this repo's
+    normal case — versions are bumped per-commit, not per-release)."""
+    import urllib.request, urllib.error
     if not GITHUB_REPO:
         return jsonify({'error': 'MARIO_GITHUB_REPO not set'}), 400
     now = time.time()
     if _ver_cache['data'] and now - _ver_cache['t'] < 3600:
         return jsonify(_ver_cache['data'])
     try:
-        url = f'https://api.github.com/repos/{GITHUB_REPO}/releases/latest'
-        req = urllib.request.Request(url, headers={'User-Agent':'mario-stream'})
-        with urllib.request.urlopen(req, timeout=5) as r:
-            data = json.loads(r.read().decode())
-        latest = (data.get('tag_name','') or '').lstrip('v')
+        latest, url = None, ''
+        try:
+            api_url = f'https://api.github.com/repos/{GITHUB_REPO}/releases/latest'
+            req = urllib.request.Request(api_url, headers={'User-Agent': 'mario-stream'})
+            with urllib.request.urlopen(req, timeout=5) as r:
+                data = json.loads(r.read().decode())
+            latest = (data.get('tag_name', '') or '').lstrip('v')
+            url = data.get('html_url', '')
+        except urllib.error.HTTPError as e:
+            if e.code != 404:
+                raise
+        if not latest:
+            latest, url = _version_from_main_branch()
         result = {'current': MARIO_VERSION, 'latest': latest,
                   'update_available': bool(latest and latest != MARIO_VERSION),
-                  'url': data.get('html_url','')}
+                  'url': url}
         _ver_cache.update({'t': now, 'data': result})
         return jsonify(result)
     except Exception as e:
