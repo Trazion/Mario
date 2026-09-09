@@ -1,0 +1,36 @@
+[Unit]
+Description=Mario Camera Streamer
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Run as the same user that owns ~/mario_* dirs and PulseAudio session.
+User=%i
+EnvironmentFile=-/home/%i/.mario_env
+WorkingDirectory=/home/%i/mario-stream
+ExecStart=/home/%i/mario-stream/venv/bin/gunicorn -c /home/%i/mario-stream/gunicorn_conf.py app:app
+Restart=on-failure
+RestartSec=5
+# Allow access to virtual camera + PulseAudio socket
+SupplementaryGroups=video audio
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
+# /tmp/mario_gunicorn holds gunicorn's heartbeat/control files (see gunicorn_conf.py).
+ReadWritePaths=/home/%i/mario_data /home/%i/mario_media /home/%i/mario_playlists /home/%i/mario_profiles /home/%i/mario_recordings /home/%i/mario_thumbs /home/%i/mario_watermarks /tmp /tmp/mario_gunicorn
+Environment=MARIO_GUNICORN_TMP=/tmp/mario_gunicorn
+
+[Install]
+WantedBy=multi-user.target
+
+# ──────────────────────────────────────────────
+# Install:
+#   sudo cp mario.service /etc/systemd/system/mario@.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now mario@$USER.service
+#   sudo systemctl status     mario@$USER.service
+#   journalctl -u mario@$USER -f
+# ──────────────────────────────────────────────

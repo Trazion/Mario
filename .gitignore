@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Pytest / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.cache/
+
+# Mypy / linters
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Mario runtime data (per-user, should not be committed)
+mario_*.json
+mario_*.json.migrated
+mario_state.db
+mario_state.db-*
+mario_playlists/
+mario_profiles/
+mario_thumbs/
+mario_recordings/
+mario_watermarks/
+mario_history.json*
+
+# Env / secrets
+.mario_env
+.env
+.env.*
+
+# Build artifacts kept in repo separately
+project-files/mario-project.zip

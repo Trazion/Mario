@@ -1,0 +1,52 @@
+version: "3.9"
+
+# v3.8.2 — Persistence model:
+#   Previously this file bind-mounted ~/mario_state.db as a single file.
+#   Docker silently creates a *directory* with that name if the host path
+#   does not exist, which then makes SQLite fail to open the DB. We now
+#   put both SQLite + the legacy history JSON inside a single bind-mounted
+#   data DIRECTORY (~/mario_data) and tell the app where they live via
+#   MARIO_DB_PATH / MARIO_HISTORY_FILE. Directories are safe to auto-create.
+#
+#   The non-root `mario` user inside the container runs as UID 1000.
+#   The bind-mounted host directories MUST be writable by UID 1000.
+#   Before first `docker compose up -d`:
+#       mkdir -p ~/mario_data ~/mario_playlists ~/mario_profiles \
+#                ~/mario_thumbs ~/mario_recordings ~/mario_watermarks
+#       sudo chown -R 1000:1000 ~/mario_data ~/mario_playlists \
+#                ~/mario_profiles ~/mario_thumbs ~/mario_recordings \
+#                ~/mario_watermarks
+
+services:
+  mario:
+    build: .
+    image: mariostream:latest
+    container_name: mario-stream
+    restart: unless-stopped
+    network_mode: host                 # required for /dev/video + PulseAudio
+    devices:
+      - /dev/video10:/dev/video10      # virtual camera (v4l2loopback)
+    environment:
+      MARIO_HOST: 0.0.0.0
+      MARIO_PORT: 5000
+      MARIO_USER: mario
+      MARIO_PASSWORD: ${MARIO_PASSWORD:-}
+      MARIO_GITHUB_REPO: ${MARIO_GITHUB_REPO:-}
+      # Dockerfile runs as non-root `mario` (UID 1000), HOME=/home/mario.
+      HOME: /home/mario
+      # Keep allowlist in sync with the volume mounts below.
+      MARIO_SCAN_ROOTS: /home/mario/Videos:/home/mario/Music:/home/mario/mario_playlists:/home/mario/mario_recordings:/home/mario/mario_watermarks:/mnt:/media
+      # v3.8.2: redirect SQLite + history into the dedicated data dir so a
+      # missing host path can never be auto-created as a directory by Docker.
+      MARIO_DB_PATH: /home/mario/mario_data/mario_state.db
+      MARIO_HISTORY_FILE: /home/mario/mario_data/mario_history.json
+      PULSE_SERVER: unix:/run/user/1000/pulse/native
+    volumes:
+      - ${HOME}/mario_playlists:/home/mario/mario_playlists
+      - ${HOME}/mario_profiles:/home/mario/mario_profiles
+      - ${HOME}/mario_thumbs:/home/mario/mario_thumbs
+      - ${HOME}/mario_recordings:/home/mario/mario_recordings
+      - ${HOME}/mario_watermarks:/home/mario/mario_watermarks
+      # Single directory for SQLite DB + history JSON (always a dir → safe).
+      - ${HOME}/mario_data:/home/mario/mario_data
+      - /run/user/1000/pulse:/run/user/1000/pulse:ro

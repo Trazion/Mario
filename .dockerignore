@@ -1,0 +1,17 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+.git/
+.gitignore
+.github/
+*.md
+!README.md
+mario-project.zip
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+tests/__pycache__/
+mario_*.json
+mario_state.db

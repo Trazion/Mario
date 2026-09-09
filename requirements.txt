@@ -1,0 +1,13 @@
+# Mario Camera Streamer — Python dependencies
+#
+# All other dependencies (ffmpeg, v4l2loopback, v4l-utils)
+# are system packages installed via setup.sh
+#
+# Install with:
+#   pip install -r requirements.txt
+
+flask>=2.3.0
+gunicorn>=21.2.0       # v3.5: production WSGI server (1 worker / N threads)
+
+# Dev / CI only
+pytest>=7.4.0          # smoke + validation suite (tests/)

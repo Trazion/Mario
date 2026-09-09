@@ -1,0 +1,725 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0b1220">
+<meta name="color-scheme" content="dark">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<link rel="manifest" href="/manifest.webmanifest">
+<title>Mario Stream — Control Panel</title>
+<script>
+// v3.9.2 — Lock to dark theme. The legacy light palette caused white-on-white
+// rendering bugs; light mode is temporarily disabled and any stored
+// 'mario_theme=light' is overwritten before the CSS evaluates.
+(function(){
+  try{
+    document.documentElement.setAttribute('data-theme','dark');
+    if (localStorage.getItem('mario_theme') === 'light')
+      localStorage.setItem('mario_theme','dark');
+  }catch(_){}
+})();
+</script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/dashboard.css?v=3.9.2">
+<script>
+// v3.7: CSRF double-submit token monkey-patch (preserved verbatim).
+(function(){
+  const MUTATING = new Set(['POST','PUT','PATCH','DELETE']);
+  function getCookie(name){
+    return document.cookie.split('; ').reduce((acc,c)=>{
+      const [k,...v] = c.split('=');
+      return k===name ? decodeURIComponent(v.join('=')) : acc;
+    }, '');
+  }
+  let _primed = null;
+  async function primeCsrf(){
+    if (_primed) return _primed;
+    _primed = (async () => {
+      try {
+        const r = await _origFetch('/api/csrf', {credentials:'same-origin'});
+        const j = await r.json().catch(()=>null);
+        return (j && j.token) || getCookie('mario_csrf') || '';
+      } catch { return getCookie('mario_csrf') || ''; }
+    })();
+    return _primed;
+  }
+  const _origFetch = window.fetch.bind(window);
+  window.fetch = async function(input, init){
+    init = init || {};
+    const method = (init.method || (typeof input==='object' && input.method) || 'GET').toUpperCase();
+    let url = (typeof input === 'string') ? input : (input && input.url) || '';
+    const sameOrigin = !/^https?:\/\//i.test(url) || url.startsWith(location.origin);
+    if (sameOrigin && MUTATING.has(method)) {
+      let tok = getCookie('mario_csrf');
+      if (!tok) tok = await primeCsrf();
+      const headers = new Headers(init.headers || {});
+      if (tok && !headers.has('X-CSRF-Token')) headers.set('X-CSRF-Token', tok);
+      init.headers = headers;
+      init.credentials = init.credentials || 'same-origin';
+    }
+    const resp = await _origFetch(input, init);
+    if (sameOrigin && resp.status === 401) {
+      try {
+        const j = await resp.clone().json();
+        if (j && j.login_url) {
+          location.href = j.login_url + '?next=' + encodeURIComponent(location.pathname + location.search);
+          return resp;
+        }
+      } catch(_) {}
+    }
+    return resp;
+  };
+  primeCsrf();
+})();
+// apiFetch helper (preserved verbatim)
+window.apiFetch = async function(url, options){
+  options = options || {};
+  const headers = new Headers(options.headers || {});
+  let body = options.body;
+  const isForm = (typeof FormData !== 'undefined') && body instanceof FormData;
+  const isBlob = (typeof Blob !== 'undefined') && body instanceof Blob;
+  const isStr  = typeof body === 'string';
+  if (body != null && !isForm && !isBlob && !isStr) {
+    if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
+    body = JSON.stringify(body);
+  }
+  options.headers = headers;
+  options.body = body;
+  options.credentials = options.credentials || 'same-origin';
+  return window.fetch(url, options);
+};
+</script>
+</head>
+<body class="dash">
+
+<div class="toast-stack" id="toastStack"></div>
+<div class="sb-backdrop" id="sbBackdrop"></div>
+
+<aside class="sidebar" id="sidebar">
+  <div class="sb-brand">
+    <div class="sb-brand-icon">M</div>
+    <div class="sb-brand-text"><b>Mario Stream</b><span class="ver">v3.9.0</span></div>
+  </div>
+  <nav class="sb-nav">
+    <div class="sb-nav-group">
+      <div class="sb-nav-title sb-label">Overview</div>
+      <div class="sb-item" data-page="dashboard"><span class="sb-icon">▦</span><span class="sb-label">Dashboard</span></div>
+      <div class="sb-item" data-page="live-studio"><span class="sb-icon">●</span><span class="sb-label">Live Studio</span></div>
+    </div>
+    <div class="sb-nav-group">
+      <div class="sb-nav-title sb-label">Content</div>
+      <div class="sb-item" data-page="media-library"><span class="sb-icon">📁</span><span class="sb-label">Media Library</span></div>
+      <div class="sb-item" data-page="playlist"><span class="sb-icon">≡</span><span class="sb-label">Playlist Builder</span></div>
+      <div class="sb-item" data-page="profiles"><span class="sb-icon">⚡</span><span class="sb-label">Profiles</span></div>
+      <div class="sb-item" data-page="scheduler"><span class="sb-icon">⏰</span><span class="sb-label">Scheduler</span></div>
+      <div class="sb-item" data-page="recordings"><span class="sb-icon">⏺</span><span class="sb-label">Recordings</span></div>
+    </div>
+    <div class="sb-nav-group">
+      <div class="sb-nav-title sb-label">System</div>
+      <div class="sb-item" data-page="backups"><span class="sb-icon">⇅</span><span class="sb-label">Backups</span></div>
+      <div class="sb-item" data-page="health"><span class="sb-icon">♥</span><span class="sb-label">System Health</span></div>
+      <div class="sb-item" data-page="settings"><span class="sb-icon">⚙</span><span class="sb-label">Settings</span></div>
+      <div class="sb-item" data-page="logs"><span class="sb-icon">▤</span><span class="sb-label">Logs</span></div>
+    </div>
+  </nav>
+  <div class="sb-foot">
+    <div class="sb-foot-row" id="sbFootAuth"><div class="dot"></div><span class="sb-foot-text sb-label">Auth status</span></div>
+    <div class="sb-foot-row" id="sbFootStream"><div class="dot"></div><span class="sb-foot-text sb-label">Server idle</span></div>
+    <button class="sb-collapse-btn sb-label" onclick="toggleSidebar()">« Collapse</button>
+  </div>
+</aside>
+
+<div class="dash-main">
+  <header class="dash-topbar">
+    <button class="tb-toggle" onclick="toggleSidebar()" title="Toggle sidebar">☰</button>
+    <div class="tb-title" id="tbTitle">Dashboard</div>
+    <div class="tb-pill" id="tbStreamPill"><span class="pdot"></span> Offline</div>
+    <!-- legacy status dots (kept so existing checkStatus() JS keeps working) -->
+    <div class="status-bar" style="display:flex;gap:6px">
+      <div class="status-pill"><div class="status-dot" id="dotFFmpeg"></div><span>FFmpeg</span></div>
+      <div class="status-pill"><div class="status-dot" id="dotV4l2"></div><span>v4l2</span></div>
+      <div class="status-pill"><div class="status-dot" id="dotStream"></div><span id="streamStatus">Idle</span></div>
+    </div>
+    <div class="tb-actions">
+      <a id="updateBadge" href="#" target="_blank" rel="noopener" title="Update available"
+         style="display:none;font-size:11px;padding:4px 9px;border-radius:7px;background:rgba(245,158,11,.12);color:var(--shell-yellow);border:1px solid rgba(245,158,11,.3);font-family:'JetBrains Mono',monospace;text-decoration:none">⬆ Update</a>
+      <button class="theme-btn" onclick="openSnapshot()" title="Stream snapshot">📸</button>
+      <button class="theme-btn" onclick="exportBackup()" title="Backup download">⬇</button>
+      <button class="theme-btn" onclick="document.getElementById('restoreFile').click()" title="Restore from zip">⬆</button>
+      <input type="file" id="restoreFile" accept=".zip" style="display:none" onchange="importBackup(this)">
+      <button class="theme-btn" id="themeToggleBtn" onclick="toggleTheme()" title="Toggle theme">🌙</button>
+      <a class="theme-btn" href="/logout" title="Sign out" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center">⎋</a>
+    </div>
+  </header>
+
+  <main class="dash-content">
+
+    <!-- ── Preview Modal (shared) ── -->
+
+    <!-- ╔══════════════════ DASHBOARD ══════════════════╗ -->
+    <section class="page page-stack" data-page="dashboard">
+      <div class="metric-grid">
+        <div class="metric" id="dmStatusCard"><div class="m-label">Stream</div><div class="m-val" id="dmStatus">—</div><div class="m-sub">Current status</div></div>
+        <div class="metric accent"><div class="m-label">Playlist</div><div class="m-val" id="dmPlaylist">0</div><div class="m-sub">Clips queued</div></div>
+        <div class="metric"><div class="m-label">Device</div><div class="m-val" id="dmDevice" style="font-size:14px">—</div><div class="m-sub">Output</div></div>
+        <div class="metric"><div class="m-label">Now Playing</div><div class="m-val" id="dmCurrent" style="font-size:13px">—</div><div class="m-sub">Current clip</div></div>
+        <div class="metric"><div class="m-label">RTMP outputs</div><div class="m-val" id="dmRtmp">0</div><div class="m-sub">Active</div></div>
+        <div class="metric"><div class="m-label">Recording</div><div class="m-val" id="dmRec">OFF</div><div class="m-sub">Disk capture</div></div>
+        <div class="metric"><div class="m-label">Disk free</div><div class="m-val" id="dmDisk" style="font-size:15px">—</div><div class="m-sub">Recordings dir</div></div>
+        <div class="metric"><div class="m-label">Version</div><div class="m-val" id="dmVer" style="font-size:14px">—</div><div class="m-sub">Mario Stream</div></div>
+      </div>
+
+      <div class="stream-panel">
+        <div class="card-header"><div class="card-title">⚡ Quick actions</div></div>
+        <div class="card-body" style="padding:14px 18px">
+          <div class="quick-row">
+            <button class="btn btn-success js-start-stream" data-action="start-stream" onclick="startStream()">▶ Start Stream</button>
+            <button class="btn btn-danger" onclick="stopStream()">⏹ Stop</button>
+            <button class="btn btn-ghost" onclick="skipClip()">⏭ Skip</button>
+            <button class="btn btn-ghost" onclick="showPage('live-studio')">Open Live Studio →</button>
+            <button class="btn btn-ghost" onclick="showPage('media-library')">📁 Scan Media</button>
+            <button class="btn btn-ghost" onclick="exportBackup()">⬇ Export Backup</button>
+          </div>
+          <div id="startProgressPanel" class="start-progress" style="display:none;margin-top:14px">
+            <div class="sp-head">
+              <div class="sp-title">Preparing Stream</div>
+              <div class="sp-pct" id="spPct">0%</div>
+            </div>
+            <div class="sp-bar"><div class="sp-fill" id="spFill" style="width:0%"></div></div>
+            <div class="sp-meta">
+              <div class="sp-step" id="spStep">Starting…</div>
+              <div class="sp-clip" id="spClip"></div>
+              <div class="sp-idx"  id="spIdx"></div>
+            </div>
+            <div class="sp-status" id="spStatus"></div>
+            <div class="sp-error" id="spError" style="display:none"></div>
+          </div>
+        </div>
+      </div>
+
+
+      <div class="stream-panel">
+        <div class="card-header"><div class="card-title">♥ Health checklist</div>
+          <button class="btn btn-ghost" style="padding:5px 9px;font-size:12px" onclick="refreshDashboard();refreshHealthPage()">Refresh</button></div>
+        <div class="card-body" style="padding:14px 18px">
+          <div class="health-list" id="dhHealth"><div class="health-item"><div class="h-dot"></div>Loading…</div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ╔══════════════════ LIVE STUDIO ══════════════════╗ -->
+    <section class="page page-stack" data-page="live-studio">
+      <div class="stream-panel">
+        <div class="card-header">
+          <div class="card-title">⚙️ Stream Settings</div>
+          <!-- Preset profile loader -->
+          <div style="display:flex;gap:6px;align-items:center">
+            <select class="pl-select" id="profileSelect" style="width:160px"><option value="">— load profile —</option></select>
+            <button class="btn btn-ghost" style="padding:5px 9px;font-size:12px" onclick="loadProfile()">Apply</button>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="settings-grid">
+            <div class="setting-item">
+              <label>Device</label>
+              <select class="select-field" id="deviceSelect"><option value="/dev/video0">/dev/video0</option></select>
+            </div>
+            <div class="setting-item">
+              <label>Resolution <span class="res-auto-badge" id="autoResBadge">AUTO</span></label>
+              <select class="select-field" id="resolutionSelect" onchange="updateResBadge()">
+                <option value="auto" selected>Auto — from video</option>
+                <optgroup label="Landscape (16:9)">
+                  <option value="1920x1080">1080p — 1920×1080</option>
+                  <option value="1280x720">720p — 1280×720</option>
+                  <option value="854x480">480p — 854×480</option>
+                  <option value="640x360">360p — 640×360</option>
+                </optgroup>
+                <optgroup label="Portrait (9:16) — للفيديو الرأسي">
+                  <option value="1080x1920">1080p Portrait — 1080×1920</option>
+                  <option value="720x1280">720p Portrait — 720×1280</option>
+                  <option value="480x854">480p Portrait — 480×854</option>
+                  <option value="360x640">360p Portrait — 360×640</option>
+                </optgroup>
+              </select>
+            </div>
+            <div class="setting-item">
+              <label>Frame Rate</label>
+              <select class="select-field" id="fpsSelect">
+                <option value="60">60 FPS</option><option value="30" selected>30 FPS</option>
+                <option value="24">24 FPS</option><option value="15">15 FPS</option>
+              </select>
+            </div>
+            <div class="setting-item">
+              <label>Encoding Speed</label>
+              <select class="select-field" id="presetSelect">
+                <option value="ultrafast" selected>Ultrafast</option><option value="superfast">Superfast</option>
+                <option value="veryfast">Very Fast</option><option value="faster">Faster</option>
+                <option value="medium">Medium</option><option value="slow">Slow</option>
+              </select>
+            </div>
+            <div class="setting-item">
+              <label>Buffer Size</label>
+              <select class="select-field" id="bufferSelect">
+                <option value="0" selected>0 — no buffer</option><option value="512">512 KB</option>
+                <option value="1024">1 MB</option><option value="2048">2 MB</option><option value="4096">4 MB</option>
+              </select>
+            </div>
+            <div class="setting-item">
+              <label>Loop Mode</label>
+              <select class="select-field" id="loopModeSelect">
+                <option value="all" selected>🔁 Repeat All</option>
+                <option value="once">▶ Play Once</option>
+                <option value="one">🔂 Repeat One</option>
+                <option value="shuffle">🔀 Shuffle Loop</option>
+              </select>
+            </div>
+            <div class="setting-item">
+              <label>Video Fit Mode <span id="fitModeBadge" style="font-size:10px;color:var(--accent,#22d3ee);margin-left:4px">Fit / No Zoom</span></label>
+              <select class="select-field" id="fitModeSelect" onchange="if(window.updateFitBadge)updateFitBadge()">
+                <option value="fit" selected>Fit / No Zoom / Letterbox (recommended)</option>
+                <option value="fill">Fill / Crop (may crop video)</option>
+                <option value="stretch">Stretch (not recommended — distorts)</option>
+              </select>
+            </div>
+            <div class="setting-item">
+              <label>Normalize Before Live
+                <span id="normalizeBadge" style="font-size:10px;color:#22c55e;margin-left:4px;font-weight:700">ON</span>
+                <span style="font-size:10px;color:var(--text-dim);display:block;margin-top:2px">Prevents mid-stream zoom (recommended)</span>
+              </label>
+              <div style="padding-top:5px">
+                <div class="toggle on" id="normalizeBeforeLiveToggle"
+                     onclick="this.classList.toggle('on');updateNormalizeBadge()"></div>
+              </div>
+            </div>
+            <div class="setting-item">
+              <label>Auto-Quality <span style="font-size:10px;color:var(--text-dim)">bitrate</span></label>
+              <div style="padding-top:5px"><div class="toggle" id="autoQualityToggle" onclick="this.classList.toggle('on')"></div></div>
+            </div>
+            <div class="setting-item">
+              <label>Auto-Restart <span class="restart-badge" id="restartBadge" style="display:none">ON</span></label>
+              <div style="padding-top:5px"><div class="toggle" id="autoRestartToggle" onclick="this.classList.toggle('on');updateRestartBadge()"></div></div>
+            </div>
+            <div class="setting-item">
+              <label>Shuffle <span style="font-size:10px;color:var(--accent2)">🔀</span></label>
+              <div style="padding-top:5px"><div class="toggle" id="shuffleToggle" onclick="this.classList.toggle('on')"></div></div>
+            </div>
+          </div>
+
+          <!-- Text Overlay -->
+          <div class="overlay-row">
+            <div class="setting-item">
+              <label>🎬 Text Overlay</label>
+              <input type="text" class="input-field" id="overlayText" placeholder="e.g. LIVE · My Channel" style="font-size:12px;padding:7px 10px">
+            </div>
+            <div>
+              <div style="font-size:11px;color:var(--text-dim);margin-bottom:5px;text-transform:uppercase;letter-spacing:.5px">Position</div>
+              <div class="pos-grid" id="overlayPosGrid">
+                <button class="pos-btn active" data-pos="tl" onclick="setPos('tl')">↖ TL</button>
+                <button class="pos-btn" data-pos="tr" onclick="setPos('tr')">TR ↗</button>
+                <button class="pos-btn" data-pos="bl" onclick="setPos('bl')">↙ BL</button>
+                <button class="pos-btn" data-pos="br" onclick="setPos('br')">BR ↘</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- RTMP -->
+          <div class="rtmp-row">
+            <label>🔴 RTMP Output — leave blank for virtual cam</label>
+            <input type="text" class="input-field" id="rtmpInput" placeholder="rtmp://live.twitch.tv/app/KEY  or  rtmp://a.rtmp.youtube.com/live2/KEY" style="font-size:11px;padding:7px 10px;margin-top:4px">
+          </div>
+
+          <!-- Advanced Output (multi-RTMP, watermark, recording) -->
+          <details class="rtmp-row" style="margin-top:10px">
+            <summary style="cursor:pointer;font-size:12px;color:var(--text-mid)">⚙️ Advanced output (watermark · recording · 2nd RTMP)</summary>
+            <div style="display:grid;gap:8px;margin-top:10px;font-size:12px">
+              <input type="text" class="input-field" id="rtmpInput2" placeholder="Secondary RTMP URL (optional)" style="font-size:11px;padding:7px 10px">
+              <input type="text" class="input-field" id="watermarkPath" placeholder="/path/to/logo.png (watermark)" style="font-size:11px;padding:7px 10px">
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                <label>Pos
+                  <select id="watermarkPos" class="input-field" style="padding:5px 8px;font-size:11px">
+                    <option value="tl">TL</option><option value="tr">TR</option>
+                    <option value="bl">BL</option><option value="br" selected>BR</option>
+                  </select>
+                </label>
+                <label>Opacity <input type="range" id="watermarkOpacity" min="0" max="1" step="0.05" value="0.7" style="vertical-align:middle"></label>
+                <label>Scale <input type="range" id="watermarkScale" min="0.02" max="0.5" step="0.01" value="0.15" style="vertical-align:middle"></label>
+              </div>
+              <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+                <label style="display:flex;align-items:center;gap:6px">
+                  <span>📼 Record to MP4</span>
+                  <div class="toggle" id="recordToggle" onclick="this.classList.toggle('on')"></div>
+                </label>
+                <label style="display:flex;align-items:center;gap:6px">
+                  <span>🧠 Smart shuffle</span>
+                  <div class="toggle" id="smartShuffleToggle" onclick="this.classList.toggle('on')"></div>
+                </label>
+              </div>
+            </div>
+          </details>
+
+          <!-- Master Volume -->
+          <div class="vol-row">
+            <label>🔊 Vol</label>
+            <input type="range" class="global-vol-slider" id="globalVolSlider" min="0" max="200" value="100" oninput="updateGlobalVol()">
+            <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--accent);width:36px;text-align:right" id="globalVolLabel">100%</span>
+            <button class="global-mute-btn" id="globalMuteBtn" onclick="toggleGlobalMute()">🔇 Mute</button>
+          </div>
+
+          <!-- External Audio -->
+          <div class="audio-track-row">
+            <label>🎵 Track</label>
+            <div class="audio-track-badge" id="audioTrackBadge">No external audio</div>
+            <button class="icon-btn red" onclick="clearAudioTrack()">×</button>
+          </div>
+
+          <!-- Video Filters -->
+          <div class="filters-panel">
+            <div class="filters-header">
+              <label>🎨 Video Filters <span class="filter-preview-badge" id="filterActiveBadge">ACTIVE</span></label>
+              <button class="filters-reset" onclick="resetFilters()">Reset</button>
+            </div>
+            <div class="filter-row">
+              <span class="filter-icon">☀️</span>
+              <span class="filter-name">Brightness</span>
+              <input type="range" class="filter-slider brightness" id="fBrightness" min="-1" max="1" step="0.05" value="0" oninput="updateFilter()">
+              <span class="filter-val" id="fvBrightness">0.00</span>
+            </div>
+            <div class="filter-row">
+              <span class="filter-icon">◑</span>
+              <span class="filter-name">Contrast</span>
+              <input type="range" class="filter-slider contrast" id="fContrast" min="0" max="2" step="0.05" value="1" oninput="updateFilter()">
+              <span class="filter-val" id="fvContrast">1.00</span>
+            </div>
+            <div class="filter-row">
+              <span class="filter-icon">🎨</span>
+              <span class="filter-name">Saturation</span>
+              <input type="range" class="filter-slider saturation" id="fSaturation" min="0" max="3" step="0.05" value="1" oninput="updateFilter()">
+              <span class="filter-val" id="fvSaturation">1.00</span>
+            </div>
+            <div class="grayscale-row">
+              <div class="grayscale-label">
+                <span>⬛</span>
+                <span style="font-size:12px;color:var(--text-mid)">Grayscale</span>
+              </div>
+              <div class="toggle" id="grayscaleToggle" onclick="this.classList.toggle('on');updateFilter()"></div>
+            </div>
+          </div>
+
+          <div class="stream-controls">
+            <button class="btn btn-success btn-xl js-start-stream" data-action="start-stream" id="startBtn" onclick="startStream()">▶ Start Stream</button>
+            <button class="btn btn-danger btn-xl" id="stopBtn" onclick="stopStream()" disabled>⏹ Stop</button>
+            <button class="btn btn-ghost btn-xl" id="skipBtn" onclick="skipClip()" disabled title="N">⏭ Next clip</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="stream-panel" style="margin-top:18px">
+        <div class="card-header">
+          <div class="card-title">📊 Live Statistics</div>
+          <span class="stats-idle-badge" id="statsIdleBadge">Stream idle</span>
+        </div>
+        <div class="card-body" style="padding:14px 18px">
+          <div class="stats-grid">
+            <div class="stat-tile"><div class="stat-value" id="svFps">—</div><div class="stat-label">FPS</div><div class="stat-bar-wrap"><div class="stat-bar" id="sbFps"></div></div></div>
+            <div class="stat-tile"><div class="stat-value" id="svBitrate">—</div><div class="stat-label">Bitrate</div><div class="stat-bar-wrap"><div class="stat-bar green" id="sbBitrate"></div></div></div>
+            <div class="stat-tile"><div class="stat-value" id="svSpeed">—</div><div class="stat-label">Speed</div><div class="stat-bar-wrap"><div class="stat-bar purple" id="sbSpeed"></div></div></div>
+            <div class="stat-tile"><div class="stat-value" id="svFrames">—</div><div class="stat-label">Frames</div><div class="stat-bar-wrap"><div class="stat-bar" id="sbFrames" style="width:100%"></div></div></div>
+            <div class="stat-tile" id="stDropped"><div class="stat-value" id="svDropped">0</div><div class="stat-label">Dropped</div></div>
+            <div class="stat-tile"><div class="stat-value" id="svSize">—</div><div class="stat-label">Output</div></div>
+          </div>
+          <div style="margin-top:12px">
+            <div style="font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">FPS History (last 60s)</div>
+            <canvas id="fpsChart" height="44" style="width:100%;border-radius:6px;background:var(--surface2);display:block"></canvas>
+          </div>
+        </div>
+      </div>
+
+
+      <div class="stream-panel" style="margin-top:18px">
+        <div class="card-header">
+          <div class="card-title">🖥️ Live Preview</div>
+          <button class="btn btn-ghost" id="previewToggleBtn" style="padding:5px 9px;font-size:12px" onclick="togglePreview()">Show</button>
+        </div>
+        <div class="card-body" style="padding:14px 18px">
+          <div id="previewBox" style="display:none;text-align:center">
+            <img id="previewImg" alt="Live preview"
+                 style="max-width:100%;border-radius:8px;background:#000;aspect-ratio:16/9;object-fit:contain"/>
+            <div style="font-size:11px;color:var(--text-dim);margin-top:6px">
+              480×270 @ 8fps — sampled from the virtual camera
+            </div>
+          </div>
+          <div id="previewIdle" style="font-size:12px;color:var(--text-dim)">
+            Click <b>Show</b> while a stream is running to view what consumers of the virtual camera see.
+          </div>
+        </div>
+      </div>
+
+
+    </section>
+
+    <!-- ╔══════════════════ MEDIA LIBRARY ══════════════════╗ -->
+    <section class="page page-stack" data-page="media-library">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">📁 File Browser</div>
+          <button class="btn btn-ghost" id="addAllBtn" style="padding:5px 10px;font-size:12px;display:none" onclick="addAllToPlaylist()">+ Add All</button>
+        </div>
+        <div class="card-body">
+          <div class="tab-bar">
+            <div class="tab active" id="tabVideo" onclick="switchTab('video')">🎬 Videos</div>
+            <div class="tab" id="tabAudio" onclick="switchTab('audio')">🎵 Audio</div>
+          </div>
+          <div class="input-group">
+            <input type="text" class="input-field" id="folderInput" placeholder="/home/user/videos" value="/home">
+            <button class="btn btn-primary" onclick="scanFolder()">🔍 Scan</button>
+          </div>
+          <div class="scan-options"><label><input type="checkbox" id="recursiveCheck"> Scan sub-folders</label></div>
+          <div class="file-list" id="fileList">
+            <div class="empty-state"><div class="icon">🎬</div><p>Enter a folder path and click Scan</p></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+
+    </section>
+
+    <!-- ╔══════════════════ PLAYLIST BUILDER ══════════════════╗ -->
+    <section class="page page-stack" data-page="playlist">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">🎵 Playlist</div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <span class="total-badge" id="totalDuration">00:00</span>
+            <button class="btn btn-ghost" style="padding:5px 9px;font-size:12px" onclick="shufflePlaylist()" title="Shuffle">🔀</button>
+            <button class="btn btn-ghost" style="padding:5px 9px;font-size:12px" onclick="clearPlaylist()">Clear</button>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="live-panel" id="livePanel">
+            <span class="live-badge">LIVE</span>
+            <div class="live-info">
+              <div class="live-now-playing" id="liveNowPlaying">—</div>
+              <div class="live-meta">
+                <span class="live-res" id="liveRes"></span>
+                <span class="uptime-badge" id="uptimeBadge">00:00</span>
+              </div>
+            </div>
+          </div>
+          <div class="progress-row" id="progressRow" style="display:none">
+            <div class="progress-label"><span>Stream uptime</span><span id="progressTime">0:00</span></div>
+            <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+          </div>
+          <div class="playlist-scroll" id="playlistEl">
+            <div class="empty-state"><div class="icon">➕</div><p>Add videos from the browser on the left</p></div>
+          </div>
+          <!-- Save/Load playlists -->
+          <div class="pl-manager">
+            <label>💾</label>
+            <select class="pl-select" id="plSelect"><option value="">— saved playlists —</option></select>
+            <button class="btn btn-ghost" style="padding:5px 9px;font-size:12px" onclick="loadPlaylist()">Load</button>
+            <button class="icon-btn red" onclick="deletePlaylist()" title="Delete">🗑</button>
+          </div>
+          <div style="display:flex;gap:6px;padding-top:6px">
+            <input type="text" class="pl-name-input" id="plNameInput" placeholder="Playlist name…">
+            <button class="btn btn-yellow" style="padding:6px 12px;font-size:12px" onclick="savePlaylist()">💾 Save</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="stream-panel" style="margin-top:18px">
+        <div class="card-header">
+          <div class="card-title">📋 Stream History</div>
+          <button class="btn btn-ghost" style="padding:5px 9px;font-size:12px" onclick="clearHistory()">Clear</button>
+        </div>
+        <div class="card-body" style="padding:14px 18px">
+          <div id="historyList">
+            <div class="empty-state" style="padding:20px"><div class="icon" style="font-size:28px">📋</div><p>No sessions recorded yet</p></div>
+          </div>
+        </div>
+      </div>
+
+
+    </section>
+
+    <!-- ╔══════════════════ PROFILES ══════════════════╗ -->
+    <section class="page page-stack" data-page="profiles">
+      <div class="stream-panel" style="margin-top:18px">
+        <div class="card-header"><div class="card-title">⚡ Preset Profiles</div></div>
+        <div class="card-body" style="padding:14px 18px">
+          <div id="profileGrid" class="profile-grid">
+            <div class="empty-state" style="padding:20px;grid-column:1/-1"><div class="icon" style="font-size:28px">⚡</div><p>No profiles saved yet</p></div>
+          </div>
+          <div class="profile-save-row">
+            <input type="text" class="input-field" id="profileNameInput" placeholder="Profile name…" style="font-size:12px;padding:7px 10px">
+            <button class="btn btn-purple" style="padding:7px 14px;font-size:12px" onclick="saveProfile()">⚡ Save Profile</button>
+          </div>
+        </div>
+      </div>
+
+
+    </section>
+
+    <!-- ╔══════════════════ SCHEDULER ══════════════════╗ -->
+    <section class="page page-stack" data-page="scheduler">
+      <div class="stream-panel" style="margin-top:18px">
+        <div class="card-header">
+          <div class="card-title">⏰ Scheduler</div>
+          <span style="font-size:11px;color:var(--text-dim)" id="schedNextLabel"></span>
+        </div>
+        <div class="card-body" style="padding:14px 18px">
+          <div class="sched-form">
+            <div class="sched-row">
+              <input type="text" class="input-field" id="schedName" placeholder="Job name" style="flex:1;font-size:12px;padding:7px 10px">
+              <input type="time" class="input-field" id="schedTime" value="08:00" style="width:110px;font-size:12px;padding:7px 10px">
+            </div>
+            <div class="sched-days" id="schedDays">
+              <span class="day-btn active" data-d="0">Mon</span><span class="day-btn active" data-d="1">Tue</span>
+              <span class="day-btn active" data-d="2">Wed</span><span class="day-btn active" data-d="3">Thu</span>
+              <span class="day-btn active" data-d="4">Fri</span><span class="day-btn active" data-d="5">Sat</span>
+              <span class="day-btn active" data-d="6">Sun</span>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:10px;align-items:center">
+              <div style="flex:1;font-size:11px;color:var(--text-dim);line-height:1.5">Uses current playlist &amp; stream settings.</div>
+              <button class="btn btn-primary" style="padding:7px 14px;font-size:12px" onclick="addScheduleJob()">+ Add Job</button>
+            </div>
+          </div>
+          <div id="schedJobList" style="margin-top:12px;display:flex;flex-direction:column;gap:6px">
+            <div class="empty-state" style="padding:20px"><div class="icon" style="font-size:28px">⏰</div><p>No scheduled jobs yet</p></div>
+          </div>
+        </div>
+
+    </section>
+
+    <!-- ╔══════════════════ RECORDINGS (stub) ══════════════════╗ -->
+    <section class="page page-stack" data-page="recordings">
+      <div class="stub-empty">
+        <div class="ico">⏺</div>
+        <h3>Recordings management</h3>
+        <p>Recordings are listed via <code>/api/recordings</code>. A dedicated UI lands in the next release —<br>for now use the FFmpeg <em>Record</em> toggle in Live Studio · Advanced output.</p>
+      </div>
+    </section>
+
+    <!-- ╔══════════════════ BACKUPS (stub) ══════════════════╗ -->
+    <section class="page page-stack" data-page="backups">
+      <div class="stream-panel">
+        <div class="card-header"><div class="card-title">⬇ Export backup</div></div>
+        <div class="card-body" style="padding:14px 18px">
+          <p style="color:var(--text-dim);font-size:13px;margin-bottom:10px">
+            Includes saved playlists, profiles, history JSON and the state database.</p>
+          <button class="btn btn-primary" onclick="exportBackup()">⬇ Download backup zip</button>
+        </div>
+      </div>
+      <div class="stream-panel">
+        <div class="card-header"><div class="card-title">⬆ Restore backup</div></div>
+        <div class="card-body" style="padding:14px 18px">
+          <p style="color:var(--text-dim);font-size:13px;margin-bottom:10px">
+            ⚠ Restoring will overwrite current state, profiles and saved playlists.</p>
+          <button class="btn btn-warning" onclick="if(confirm('Restore will overwrite current playlists, profiles and state. Continue?')) document.getElementById('restoreFile').click()">⬆ Choose backup zip…</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ╔══════════════════ SYSTEM HEALTH ══════════════════╗ -->
+    <section class="page page-stack" data-page="health">
+      <div class="stream-panel">
+        <div class="card-header"><div class="card-title">♥ Live health</div>
+          <button class="btn btn-ghost" style="padding:5px 9px;font-size:12px" onclick="refreshHealthPage()">Refresh</button></div>
+        <div class="card-body" style="padding:14px 18px">
+          <div class="health-list" id="shHealth"><div class="health-item"><div class="h-dot"></div>Loading…</div></div>
+        </div>
+      </div>
+      <div class="stream-panel">
+        <div class="card-header"><div class="card-title">⚙ Runtime</div></div>
+        <div class="card-body" style="padding:14px 18px">
+          <div class="metric-grid" style="grid-template-columns:repeat(auto-fill,minmax(200px,1fr))">
+            <div class="metric"><div class="m-label">Version</div><div class="m-val" id="shVersion" style="font-size:14px">—</div></div>
+            <div class="metric"><div class="m-label">Python</div><div class="m-val" id="shPython" style="font-size:13px">—</div></div>
+            <div class="metric"><div class="m-label">FFmpeg</div><div class="m-val" id="shFfmpeg" style="font-size:13px">—</div></div>
+            <div class="metric"><div class="m-label">User</div><div class="m-val" id="shUser" style="font-size:14px">—</div></div>
+            <div class="metric"><div class="m-label">Auth</div><div class="m-val" id="shAuth" style="font-size:14px">—</div></div>
+            <div class="metric"><div class="m-label">CSRF</div><div class="m-val" id="shCsrf" style="font-size:14px">—</div></div>
+            <div class="metric"><div class="m-label">Disk</div><div class="m-val" id="shDisk" style="font-size:13px">—</div></div>
+          </div>
+          <div style="margin-top:14px;display:grid;gap:6px;font-size:12px;font-family:'JetBrains Mono',monospace;color:var(--text-mid)">
+            <div>DB path: <span id="shDbPath" style="color:var(--text)">—</span></div>
+            <div>Recordings: <span id="shRecPath" style="color:var(--text)">—</span></div>
+            <div>Scan roots: <span id="shScanRoots" style="color:var(--text)">—</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Server Controls (Restart App / Reboot Server) -->
+      <div class="stream-panel">
+        <div class="card-header"><div class="card-title">🛠 Server Controls</div></div>
+        <div class="card-body" style="padding:14px 18px">
+          <div class="metric-grid" style="grid-template-columns:repeat(auto-fill,minmax(220px,1fr));margin-bottom:14px">
+            <div class="metric"><div class="m-label">Deployment</div><div class="m-val" id="shDeployMode" style="font-size:14px">—</div></div>
+            <div class="metric"><div class="m-label">Service unit</div><div class="m-val" id="shSystemdUnit" style="font-size:12px">—</div></div>
+            <div class="metric" id="shAutostartCard"><div class="m-label">Autostart on reboot</div><div class="m-val" id="shAutostart" style="font-size:14px">—</div></div>
+            <div class="metric"><div class="m-label">Restart controls</div><div class="m-val" id="shRestartCtrl" style="font-size:14px">—</div></div>
+            <div class="metric"><div class="m-label">Reboot enabled</div><div class="m-val" id="shRebootEnabled" style="font-size:14px">—</div></div>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center">
+            <button class="btn btn-yellow" id="btnRestartApp" onclick="restartApp()" title="Restart Mario service">⟳ Restart App</button>
+            <button class="btn btn-danger" id="btnRebootServer" onclick="rebootServer()" disabled title="Reboot the host server">⏻ Reboot Server</button>
+            <span class="m-sub" id="shCtrlHint" style="color:var(--shell-text-dim);font-size:11px"></span>
+          </div>
+          <p style="margin-top:10px;font-size:11px;color:var(--shell-text-dim);line-height:1.45">
+            Restart App calls <code>sudo systemctl restart &lt;unit&gt;</code> and requires a NOPASSWD sudoers rule.
+            Reboot Server is gated by <code>MARIO_ALLOW_SERVER_REBOOT=1</code> and a separate sudoers rule for <code>/sbin/reboot</code>.
+            See <code>README.md</code> for the exact lines. Never use <code>NOPASSWD: ALL</code>.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ╔══════════════════ SETTINGS (stub) ══════════════════╗ -->
+    <section class="page page-stack" data-page="settings">
+      <div class="stub-empty">
+        <div class="ico">⚙</div>
+        <h3>Settings live in environment variables</h3>
+        <p>Mario Stream is configured via env vars (<code>MARIO_PASSWORD</code>, <code>MARIO_CSRF</code>,<br>
+        <code>MARIO_SCAN_ROOTS</code>, <code>MARIO_DB_PATH</code>, …) — see <code>README.md</code>.<br>
+        Per-session streaming defaults live in <a href="#profiles" onclick="showPage('profiles');return false">Profiles</a>.</p>
+      </div>
+    </section>
+
+    <!-- ╔══════════════════ LOGS ══════════════════╗ -->
+    <section class="page page-stack" data-page="logs">
+      <div class="stream-panel">
+        <div class="card-header"><div class="card-title">📜 Logs</div></div>
+        <div class="card-body" style="padding:14px 18px">
+          <div style="margin-top:12px">
+            <div class="log-tabs">
+              <div class="log-tab active" id="ltApp" onclick="switchLogTab('app')">App Log</div>
+              <div class="log-tab" id="ltFFmpeg" onclick="switchLogTab('ffmpeg')">FFmpeg Output</div>
+            </div>
+            <div class="log-area" id="logArea"></div>
+          </div>
+        </div>
+      </div>
+
+    </section>
+
+  </main>
+</div>
+
+<!-- ── Video Preview Modal ── -->
+<div class="preview-modal" id="previewModal" onclick="closePreview(event)">
+  <div class="preview-box" onclick="event.stopPropagation()">
+    <div class="preview-header">
+      <div class="preview-title" id="previewTitle">—</div>
+      <button class="preview-close" onclick="closePreviewModal()">×</button>
+    </div>
+    <video class="preview-video" id="previewVideo" controls autoplay></video>
+    <div class="preview-meta" id="previewMeta"></div>
+    <button class="btn btn-success preview-add-btn" id="previewAddBtn" onclick="addFromPreview()">+ Add to Playlist</button>
+  </div>
+</div>
+
+
+<script src="/static/js/app.js?v=3.9.0"></script>
+</body>
+</html>
