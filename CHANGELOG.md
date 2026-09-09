@@ -1,3 +1,55 @@
+## v3.9.19 — 2026-09-09 — In-dashboard update checker + one-click pull
+
+The version-check/apply endpoints (`/api/version/check`, `/api/version/apply`)
+already existed server-side but had no real UI beyond a small topbar badge
+that just linked out to GitHub. Added an actual "Updates" card on the
+Dashboard with a working "Check for Updates" button and a "Update Now"
+button that pulls straight from git.
+
+### app.py
+- `GITHUB_REPO` now defaults to `Trazion/Mario` (still overridable via
+  `MARIO_GITHUB_REPO`) so the update checker works out of the box on this
+  project without extra env setup.
+- `/api/version/check` no longer requires a published GitHub Release: it
+  tries `releases/latest` first, and on a 404 falls back to reading
+  `MARIO_VERSION` straight off `app.py` on the default branch via
+  `raw.githubusercontent.com` (new `_version_from_main_branch()`). This
+  repo bumps `MARIO_VERSION` per commit rather than cutting formal
+  releases, so the old releases-only check would never have found an
+  update here.
+- `/api/version/apply` (git fast-forward pull) is unchanged — still
+  opt-in via `MARIO_ALLOW_AUTO_UPDATE=1`, still refuses a dirty tree, still
+  requires the remote to match `GITHUB_REPO`. That safe-default stays as
+  it was; the new UI surfaces the 403 with the exact env var to set
+  instead of failing silently.
+- `MARIO_VERSION` bumped to **3.9.19**.
+
+### templates/index.html
+- New "⬆ Updates" card on the Dashboard page (right under Quick Actions):
+  a "🔄 Check for Updates" button, a "⬇ Update Now" button (hidden until
+  an update is actually available), and a status line that always shows
+  something concrete — current version, "already up to date", the
+  available new version, or an error — instead of the old silent-unless-
+  available topbar-only badge.
+
+### static/js/app.js
+- `checkVersion(manual)`: now writes a real status line to the dashboard
+  every time (on page load and on manual clicks), not just when an update
+  happens to be available. Reveals `#updateNowBtn` when one is.
+- New `applyUpdate()`: confirms, POSTs `/api/version/apply`, and reports
+  the exact outcome on the dashboard — the git before/after short SHAs and
+  restart hint on success, the specific dirty files on a 409, or the
+  precise `MARIO_ALLOW_AUTO_UPDATE=1` instruction on a 403 — instead of
+  the button doing nothing when auto-update is disabled server-side.
+
+### Tests
+- `python3 -m py_compile app.py auth.py state.py` ✓
+- `pytest -q` → 35 passed.
+- Manual check: mocked `releases/latest` → 404 → fallback path correctly
+  reads a version from the mocked raw `app.py` fetch and reports
+  `update_available: true`.
+- `node --check static/js/app.js` ✓ (no syntax errors)
+
 ## v3.9.18 — 2026-09-09 — Real per-clip progress bar + full-CPU normalize
 
 Two follow-up requests on top of v3.9.17's parallel normalize: a progress

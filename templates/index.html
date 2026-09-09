@@ -198,6 +198,18 @@ window.apiFetch = async function(url, options){
         </div>
       </div>
 
+      <div class="stream-panel" id="updatesCard">
+        <div class="card-header"><div class="card-title">⬆ Updates</div></div>
+        <div class="card-body" style="padding:14px 18px">
+          <div class="quick-row">
+            <button class="btn btn-ghost" onclick="checkVersion(true)">🔄 Check for Updates</button>
+            <button class="btn btn-success" id="updateNowBtn" onclick="applyUpdate()" style="display:none">⬇ Update Now</button>
+          </div>
+          <div id="updateStatusText" class="sp-status" style="margin-top:10px">Checking version…</div>
+          <div id="updateDirtyList" style="display:none;margin-top:6px;font-size:12px;opacity:.8"></div>
+        </div>
+      </div>
+
 
       <div class="stream-panel">
         <div class="card-header"><div class="card-title">♥ Health checklist</div>

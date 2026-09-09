@@ -2702,32 +2702,58 @@ def delete_job():
 
 
 # ── (19) Version / auto-update checker ───────────────────────────────────────
-MARIO_VERSION = "3.9.18"
-GITHUB_REPO   = os.environ.get('MARIO_GITHUB_REPO', '')   # e.g. "user/mario-stream"
+MARIO_VERSION = "3.9.19"
+# v3.9.19: defaults to this project's own repo so update-check works out of
+# the box; MARIO_GITHUB_REPO still overrides it for forks/self-hosters.
+GITHUB_REPO   = os.environ.get('MARIO_GITHUB_REPO', 'Trazion/Mario')
 _ver_cache    = {'t': 0, 'data': None}
 
 @app.route('/api/version')
 def version_info():
     return jsonify({'version': MARIO_VERSION, 'repo': GITHUB_REPO})
 
+def _version_from_main_branch():
+    """Fallback for repos with no GitHub Releases published: read
+    MARIO_VERSION straight off app.py on the default branch tip."""
+    import urllib.request
+    url = f'https://raw.githubusercontent.com/{GITHUB_REPO}/HEAD/app.py'
+    req = urllib.request.Request(url, headers={'User-Agent': 'mario-stream'})
+    with urllib.request.urlopen(req, timeout=5) as r:
+        text = r.read().decode('utf-8', 'replace')
+    m = re.search(r'^MARIO_VERSION\s*=\s*["\']([^"\']+)["\']', text, re.M)
+    if not m:
+        raise RuntimeError('MARIO_VERSION not found on default branch')
+    return m.group(1), f'https://github.com/{GITHUB_REPO}'
+
 @app.route('/api/version/check')
 def version_check():
-    """Compares MARIO_VERSION to the latest GitHub release tag (cached 1h)."""
-    import urllib.request
+    """Compares MARIO_VERSION to the latest GitHub release tag (cached 1h).
+    v3.9.19: falls back to reading MARIO_VERSION off the default branch's
+    app.py when the repo has no GitHub Releases published (this repo's
+    normal case — versions are bumped per-commit, not per-release)."""
+    import urllib.request, urllib.error
     if not GITHUB_REPO:
         return jsonify({'error': 'MARIO_GITHUB_REPO not set'}), 400
     now = time.time()
     if _ver_cache['data'] and now - _ver_cache['t'] < 3600:
         return jsonify(_ver_cache['data'])
     try:
-        url = f'https://api.github.com/repos/{GITHUB_REPO}/releases/latest'
-        req = urllib.request.Request(url, headers={'User-Agent':'mario-stream'})
-        with urllib.request.urlopen(req, timeout=5) as r:
-            data = json.loads(r.read().decode())
-        latest = (data.get('tag_name','') or '').lstrip('v')
+        latest, url = None, ''
+        try:
+            api_url = f'https://api.github.com/repos/{GITHUB_REPO}/releases/latest'
+            req = urllib.request.Request(api_url, headers={'User-Agent': 'mario-stream'})
+            with urllib.request.urlopen(req, timeout=5) as r:
+                data = json.loads(r.read().decode())
+            latest = (data.get('tag_name', '') or '').lstrip('v')
+            url = data.get('html_url', '')
+        except urllib.error.HTTPError as e:
+            if e.code != 404:
+                raise
+        if not latest:
+            latest, url = _version_from_main_branch()
         result = {'current': MARIO_VERSION, 'latest': latest,
                   'update_available': bool(latest and latest != MARIO_VERSION),
-                  'url': data.get('html_url','')}
+                  'url': url}
         _ver_cache.update({'t': now, 'data': result})
         return jsonify(result)
     except Exception as e:

@@ -1276,16 +1276,80 @@
   }
 
   // ── (19) Version / update checker ──────────────────────────────────────────
-  async function checkVersion(){
+  // manual=true → user clicked "Check for Updates": always write a result
+  // to the dashboard (including "already up to date" / errors), not just
+  // when an update happens to be available.
+  async function checkVersion(manual){
+    const statusEl = document.getElementById('updateStatusText');
+    const btn      = document.getElementById('updateNowBtn');
+    if(statusEl) statusEl.textContent = 'Checking for updates…';
     try{
-      const r = await fetch('/api/version/check'); if(!r.ok) return;
+      const r = await fetch('/api/version/check');
       const d = await r.json();
+      if(!r.ok || d.error){
+        if(statusEl) statusEl.textContent = `Could not check for updates: ${d.error || r.status}`;
+        return;
+      }
+      window._marioVersion = d.current;
       if(d.update_available){
         const b = document.getElementById('updateBadge');
-        b.textContent = `⬆ v${d.latest}`; b.href = d.url || '#'; b.style.display='inline-flex';
-        log(`Update available: v${d.current} → v${d.latest}`,'info');
+        if(b){ b.textContent = `⬆ v${d.latest}`; b.href = d.url || '#'; b.style.display='inline-flex'; }
+        if(statusEl) statusEl.textContent = `New version available: v${d.current} → v${d.latest}`;
+        if(btn) btn.style.display = 'inline-flex';
+        if(manual) log(`Update available: v${d.current} → v${d.latest}`,'info');
+      } else {
+        if(statusEl) statusEl.textContent = `You're on the latest version (v${d.current}).`;
+        if(btn) btn.style.display = 'none';
+        if(manual) log(`Already up to date (v${d.current})`,'success');
       }
-    }catch(e){}
+    }catch(e){
+      if(manual && statusEl) statusEl.textContent = 'Could not check for updates: '+e;
+    }
+  }
+
+  // "Update Now" — pulls the latest version straight from git (server-side,
+  // fast-forward only) and reports exactly what happened on the dashboard.
+  // Requires MARIO_ALLOW_AUTO_UPDATE=1 on the server; the button surfaces
+  // that requirement instead of failing silently when it's off.
+  async function applyUpdate(){
+    const statusEl = document.getElementById('updateStatusText');
+    const dirtyEl  = document.getElementById('updateDirtyList');
+    const btn      = document.getElementById('updateNowBtn');
+    if(!confirm('Pull the latest update now? The stream will keep running, but Mario must be restarted afterwards to load the new code.')) return;
+    if(dirtyEl) dirtyEl.style.display = 'none';
+    if(btn) btn.disabled = true;
+    if(statusEl) statusEl.textContent = 'Updating…';
+    try{
+      const r = await apiFetch('/api/version/apply', {method:'POST'});
+      const d = await r.json();
+      if(!r.ok || d.error){
+        if(r.status === 403){
+          if(statusEl) statusEl.textContent =
+            'Auto-update is disabled on this server. Set MARIO_ALLOW_AUTO_UPDATE=1 in its environment and restart Mario once to enable this button.';
+        } else if(r.status === 409 && d.dirty){
+          if(statusEl) statusEl.textContent = 'Update refused: the server has uncommitted local changes.';
+          if(dirtyEl){ dirtyEl.style.display='block'; dirtyEl.textContent = d.dirty.join(', '); }
+        } else {
+          if(statusEl) statusEl.textContent = 'Update failed: '+(d.error||r.status);
+        }
+        log('Update failed: '+(d.error||r.status),'warn');
+        return;
+      }
+      if(d.updated){
+        if(statusEl) statusEl.textContent =
+          `Updated ${d.before} → ${d.after}. Restart required: ${d.restart_hint}`;
+        log(`Updated ${d.before} → ${d.after} — restart Mario to apply`,'success');
+        if(btn) btn.style.display = 'none';
+      } else {
+        if(statusEl) statusEl.textContent = 'Already up to date — nothing to pull.';
+        log('Already up to date','info');
+      }
+    }catch(e){
+      if(statusEl) statusEl.textContent = 'Update failed: '+e;
+      log('Update failed: '+e,'warn');
+    }finally{
+      if(btn) btn.disabled = false;
+    }
   }
 
   // ── (26) Stream snapshot ───────────────────────────────────────────────────
