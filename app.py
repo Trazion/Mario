@@ -2702,7 +2702,7 @@ def delete_job():
 
 
 # ── (19) Version / auto-update checker ───────────────────────────────────────
-MARIO_VERSION = "3.9.19"
+MARIO_VERSION = "3.9.20"
 # v3.9.19: defaults to this project's own repo so update-check works out of
 # the box; MARIO_GITHUB_REPO still overrides it for forks/self-hosters.
 # Uses `or` rather than os.environ.get's default arg: setup.sh (from
@@ -3419,6 +3419,14 @@ def system_restart_app():
     if not sysctl or not unit:
         return jsonify({'success': False,
                         'error': 'systemctl/unit not detected. Set MARIO_SYSTEMD_UNIT.'}), 400
+    # v3.9.20: this used to spawn `sudo -n systemctl restart` unconditionally
+    # and swallow the result (Popen, no return-code check) — if passwordless
+    # sudo wasn't set up, the button reported "Restarting…" and silently did
+    # nothing. Check the same probe /api/app/info already exposes first.
+    if not dep.get('restart_app_supported'):
+        return jsonify({'success': False,
+                        'error': dep.get('restart_app_reason')
+                                 or 'Passwordless sudo for systemctl restart is not configured.'}), 400
     # Fixed command — no user input concatenated.
     cmd = ['sudo', '-n', sysctl, 'restart', unit]
     def _run():
