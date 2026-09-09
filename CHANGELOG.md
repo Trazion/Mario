@@ -1,3 +1,41 @@
+## v3.9.22 — 2026-09-09 — Deployed install was never actually a git checkout
+
+Reported live: `Update Now` failed with `"Project is not a git checkout"`
+even on a machine that had genuinely `git pull`ed the latest code.
+
+Root cause: `setup.sh` installs the app by rsyncing project files from
+wherever it was unpacked/cloned (`$SCRIPT_DIR`, e.g. `~/Mario`) into
+`~/mario-stream` (`$INSTALL_DIR`) — and that's the directory gunicorn /
+`python app.py` actually run from, i.e. where `PROJECT_DIR =
+os.path.dirname(os.path.abspath(__file__))` in `app.py` points. The
+rsync explicitly excluded `.git/`, so the directory the running app
+introspects for `/api/version/apply` never had a `.git` folder at all —
+`git -C PROJECT_DIR rev-parse --is-inside-work-tree` correctly reported
+"not a git checkout" on every install that went through this rsync path
+(any install where `setup.sh` wasn't run from directly inside
+`$INSTALL_DIR`, which is the documented/normal case). Running `git pull`
+in the separate source clone (`~/Mario`) never touched what's actually
+deployed.
+
+### setup.sh
+- Removed `--exclude '.git/'` from the rsync. `$INSTALL_DIR` now ends up
+  as a real git working tree with the same `origin` remote as the source
+  clone, so `/api/version/apply`'s checks (is a checkout, remote matches
+  `GITHUB_REPO`, clean tree, fast-forward pull) all actually work against
+  the directory that's really running.
+
+### Migration for existing installs
+- Re-run `./setup.sh` from inside the original git clone (e.g. `~/Mario`)
+  once — it re-syncs `~/mario-stream` and this time brings `.git` along.
+  After that, `Update Now` pulls and updates the real running directory
+  directly; a separate manual `git pull` in `~/Mario` is no longer needed
+  going forward (though it still works as the "source of truth" copy).
+
+### Tests
+- `bash -n setup.sh` ✓
+- `python3 -m py_compile app.py auth.py state.py` ✓
+- `pytest -q` → 35 passed.
+
 ## v3.9.21 — 2026-09-09 — Bump normalize cache version (real fix for the zoom bug)
 
 Reported live: the zoom artifact kept happening on the SAME clips every

@@ -2702,7 +2702,7 @@ def delete_job():
 
 
 # ── (19) Version / auto-update checker ───────────────────────────────────────
-MARIO_VERSION = "3.9.21"
+MARIO_VERSION = "3.9.22"
 # v3.9.19: defaults to this project's own repo so update-check works out of
 # the box; MARIO_GITHUB_REPO still overrides it for forks/self-hosters.
 # Uses `or` rather than os.environ.get's default arg: setup.sh (from

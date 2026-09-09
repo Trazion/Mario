@@ -163,11 +163,18 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 if [ "$SCRIPT_DIR" != "$INSTALL_DIR" ]; then
     run_as_user "mkdir -p '$INSTALL_DIR'"
     # Sync code but never touch venv / cache / user data.
+    # v3.9.22: .git/ is now INCLUDED (was excluded) — /api/version/apply
+    # runs `git -C <app's own directory>` to self-update, and that only
+    # works if the directory ffmpeg + gunicorn actually run from
+    # ($INSTALL_DIR, not $SCRIPT_DIR) is itself a git checkout with a
+    # working "origin" remote. Excluding .git/ made the in-app "Update
+    # Now" button fail with "Project is not a git checkout" on every
+    # install that used this rsync path (i.e. every install where
+    # setup.sh wasn't run from inside $INSTALL_DIR itself).
     $SUDO rsync -a --delete \
         --exclude 'venv/' \
         --exclude '__pycache__/' \
         --exclude '*.pyc' \
-        --exclude '.git/' \
         --exclude 'normalized_cache/' \
         --exclude 'mario_data/' \
         --exclude 'mario_media/' \
